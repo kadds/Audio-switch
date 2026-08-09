@@ -108,8 +108,23 @@ public partial class App : Application
     {
         allowClose = true;
         page?.Dispose();
-        trayIcon?.Dispose();
-        window?.Close();
+        page = null;
+
+        TaskbarIcon? icon = trayIcon;
+        trayIcon = null;
+        icon?.Dispose();
+
+        MainWindow? closingWindow = window;
+        window = null;
+        if (closingWindow != null)
+        {
+            closingWindow.AppWindow.Closing -= AppWindow_Closing;
+            closingWindow.Close();
+        }
+
+        // A hidden WinUI window and a tray message window can keep the
+        // dispatcher alive after Close(). Tray Exit must terminate the app.
+        Environment.Exit(0);
     }
 
     private void HideWindow()
