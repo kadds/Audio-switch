@@ -9,7 +9,7 @@ WinUI 3 项目：
 
 ## 启动
 
-```powershell
+```text
 Set-Location G:\code\dolby-access-auto-switch
 dotnet run --project .\src\DolbyAccessAutoSwitch.WinUI\DolbyAccessAutoSwitch.WinUI.csproj -c Debug -p:Platform=x64
 ```

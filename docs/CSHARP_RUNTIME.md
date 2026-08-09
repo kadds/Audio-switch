@@ -6,7 +6,7 @@ The WinUI application and the CAPX operation are implemented in C#.
 - `src/CapxSetProfile.cs` calls `SetAtmosProfile()` and verifies the readback.
 - `DolbyCapxProfileProvider` launches the packaged helper through the Windows `DesktopAppXActivator` COM API. The helper receives the Dolby Access package identity, which is required for CAPX activation.
 - The WinUI process does not start `powershell.exe` and does not open a terminal window.
-- The `scripts/Invoke-Capx*.ps1` files are manual/reverse-engineering fallbacks only.
+- No script bridge is included in the WinUI project.
 
 ## Why the helper needs the Dolby package context
 

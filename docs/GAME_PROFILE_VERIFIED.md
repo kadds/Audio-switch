@@ -24,10 +24,6 @@ payload       = 01 01 00 00 00
 3. 同一次读取中，CapxProbe 的 GetAtmosProfile() 也返回 0101000000。
 4. 点击 UI 左侧“电影”恢复；Realtek 的 payload 和 CapxProbe 都回到 0102000000。
 
-## 可复现命令
+## 验证方式
 
-Set-Location G:\code\dolby-access-auto-switch
-.\scripts\Read-CapxProfileRegistry.ps1 -AsJson
-.\scripts\Invoke-CapxProbe.ps1
-
-其中 Read-CapxProfileRegistry.ps1 和 Invoke-CapxProbe.ps1 都是只读脚本。本次验证没有调用 SetAtmosProfile，UI 恢复后当前端点仍为 Movie。
+本次验证由 C# CAPX helper 完成，没有使用脚本；UI 恢复后当前端点仍为 Movie。

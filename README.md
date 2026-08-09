@@ -17,7 +17,6 @@
 - `docs/CSHARP_RUNTIME.md`：C# 直接调用、Dolby 包身份限制和纯 C# 方案评估。
 - `docs/WINUI3.md`：WinUI 3 项目、托盘和编译说明。
 - `docs/DAX.generated.idl`：从本机 `DAX.winmd` 生成的接口定义。
-- `scripts/Invoke-CapxProbe.ps1`：在 Dolby 包身份下运行 CAPX 只读探测。
 - `src/DaxProbe.cs`：DAX WinRT/RPC 只读探测器。
 - `src/CapxProbe.cs`：CAPX `GetAtmosProfile()` 只读探测器。
 - `src/CapxSetProfile.cs`：CAPX `SetAtmosProfile()` C# setter。
@@ -26,19 +25,9 @@
 - WinUI 3 使用 `dotnet run --project .\src\DolbyAccessAutoSwitch.WinUI\DolbyAccessAutoSwitch.WinUI.csproj -c Debug -p:Platform=x64` 启动。
 - `work/`：本机探测输出和临时材料。
 
-## 运行 CAPX 只读探测
+## CAPX 运行时
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-CapxProbe.ps1 -Build
-
-读取已经写入 Windows 音频 Property Store 的 profile（只读）：
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Read-CapxProfileRegistry.ps1
-```
-
-探测需要在 Dolby Access 的包身份下启动；直接从普通 PowerShell 激活 WinRT 类会得到 `0x80040154`。
-
-当前 UI 和 CAPX 探测/写入逻辑都是 C#。`Invoke-*.ps1` 仅保留为手工逆向诊断脚本，WinUI 项目不会打包或调用它们；运行时通过 C# Desktop AppX 激活桥调用 Dolby CAPX helper。详细记录见 `docs/CSHARP_RUNTIME.md`。
+当前 UI、CAPX 探测和 profile 写入全部由 C# 实现。WinUI 通过 C# Desktop AppX 激活桥调用 Dolby CAPX helper，并验证 `SetAtmosProfile` 的 HRESULT 和读回值。详细记录见 `docs/CSHARP_RUNTIME.md`。
 
 当前 UI 统一使用 WinUI 3，托盘、静默启动、进程选择器和输出设备/profile provider 配置均由 WinUI 项目维护。新版编译说明见 `docs/WINUI3.md`。
 

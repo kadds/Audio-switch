@@ -11,6 +11,6 @@ UI 和进程监控不直接依赖 Dolby。核心抽象是 `IAudioProfileProvider
 
 - `DolbyCapxProfileProvider`：调用 Dolby 包身份下的 CAPX probe。
 
-当前 provider 的 CAPX probe/setter 本体均为 C#；包身份桥单独放在 `scripts/Invoke-CapxProbe.ps1` 和 `scripts/Invoke-CapxSetProfile.ps1`。这样未来如果 DTS 提供普通 Win32/COM 接口，可以新增 provider，而不把包身份逻辑扩散到 UI。
+当前 provider 的 CAPX probe/setter 和包身份激活桥均为 C#。这样未来如果 DTS 提供普通 Win32/COM 接口，可以新增 provider，而不把包身份逻辑扩散到 UI。
 
 未来支持 DTS 时，新增 `DtsProfileProvider : IAudioProfileProvider`，在 `AudioProfileProviderRegistry` 注册即可；进程名单、托盘、开机启动、配置文件和设备选择器不需要改写。

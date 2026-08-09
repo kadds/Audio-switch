@@ -4,7 +4,7 @@
 
 ## 目标
 
-确认 Dolby Access 是否存在可以切换音频预设的本地接口，并为 PowerShell 自动检测游戏进程、切换到 Game 预设保留可验证的实现路径。
+确认 Dolby Access 是否存在可以切换音频预设的本地接口，并为 C# 自动检测进程、切换到 Game 预设保留可验证的实现路径。
 
 ## 本机环境
 
@@ -131,21 +131,12 @@ Init and runtime parameters for ASAR written to Property Store for endpoint ...
 
 这表明 Dolby Access 的 Game/Movie 切换确实会写入端点 Property Store；这也是当前最有希望的自动化路线。
 
-## PowerShell 复现
-
-```powershell
-Set-Location G:\code\dolby-access-auto-switch
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-CapxProbe.ps1 -Build
-```
-
-脚本使用 `Invoke-CommandInDesktopPackage`，因为普通 PowerShell 直接调用 `RoGetActivationFactory` 会遇到 `0x80040154 CLASS_NOT_REGISTERED`。脚本和探测器只读，不调用 `SetAtmosProfile`。
-
 ## Game 映射验证记录
 
 1. 固定同一个端点，采集 Movie 的 blob：`01 02 00 00 00`。
 2. 通过 Dolby Access UI 切换到 Game，采集同一个端点 blob：`01 01 00 00 00`。
 3. 切回 Movie，确认同一个端点恢复为 `01 02 00 00 00`；本次已完成。
-4. 下一阶段是设计默认 dry-run 的游戏进程监控脚本；写入功能另行实现并默认关闭。
+4. 下一阶段是完善 C# 游戏进程监控；写入功能由 WinUI provider 统一实现。
 
 ## 安全边界
 
