@@ -1,0 +1,158 @@
+using H.NotifyIcon;
+using Microsoft.Windows.AppLifecycle;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Imaging;
+using System.Runtime.InteropServices;
+using Windows.Graphics;
+using WinRT.Interop;
+
+namespace DolbyAccessAutoSwitch_WinUI;
+
+public partial class App : Application
+{
+    private MainWindow? window;
+    private MainPage? page;
+    private TaskbarIcon? trayIcon;
+    private MenuFlyoutItem? trayOpenItem;
+    private MenuFlyoutItem? trayMonitorItem;
+    private MenuFlyoutItem? trayExitItem;
+    private AppInstance? appInstance;
+    private bool allowClose;
+
+    public nint MainWindowHandle => window == null ? 0 : WindowNative.GetWindowHandle(window);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(nint hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(nint hWnd);
+
+    public App()
+    {
+        SwitchConfig startupConfig = SwitchConfig.Load(AppPaths.ConfigPath);
+        Localization.Initialize(startupConfig.UiLanguage);
+        InitializeComponent();
+    }
+
+    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    {
+        appInstance = AppInstance.FindOrRegisterForKey("AudioSwitch");
+        if (!appInstance.IsCurrent)
+        {
+            _ = RedirectActivationToMainInstanceAsync();
+            return;
+        }
+
+        appInstance.Activated += AppInstance_Activated;
+        if (window != null)
+        {
+            ShowWindow();
+            return;
+        }
+
+        window = new MainWindow();
+        page = window.ContentFrame.Content as MainPage;
+        trayIcon = CreateTrayIcon();
+        trayIcon.ForceCreate();
+        window.AppWindow.Closing += AppWindow_Closing;
+        window.Activate();
+        try
+        {
+            window.AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"));
+        }
+        catch
+        {
+        }
+        window.AppWindow.Resize(new SizeInt32(1440, 900));
+        if (page?.StartHiddenRequested(args.Arguments) == true) HideWindow();
+    }
+
+    private async Task RedirectActivationToMainInstanceAsync()
+    {
+        try
+        {
+            await appInstance!.RedirectActivationToAsync(AppInstance.GetCurrent().GetActivatedEventArgs());
+        }
+        catch
+        {
+        }
+        Environment.Exit(0);
+    }
+
+    private void AppInstance_Activated(object? sender, AppActivationArguments args)
+    {
+        window?.DispatcherQueue.TryEnqueue(ShowWindow);
+    }
+
+    private void AppWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (allowClose) return;
+        args.Cancel = true;
+        HideWindow();
+    }
+
+    private void TrayOpen_Click(object? sender, RoutedEventArgs e)
+    {
+        ShowWindow();
+    }
+
+    private void TrayMonitor_Click(object? sender, RoutedEventArgs e)
+    {
+        ShowWindow();
+        page?.StartMonitoring();
+    }
+
+    private void TrayExit_Click(object? sender, RoutedEventArgs e)
+    {
+        allowClose = true;
+        page?.Dispose();
+        trayIcon?.Dispose();
+        window?.Close();
+    }
+
+    private void HideWindow()
+    {
+        if (window == null) return;
+        ShowWindow(WindowNative.GetWindowHandle(window), 0);
+    }
+
+    private void ShowWindow()
+    {
+        if (window == null) return;
+        nint handle = WindowNative.GetWindowHandle(window);
+        ShowWindow(handle, 5);
+        SetForegroundWindow(handle);
+    }
+
+    private TaskbarIcon CreateTrayIcon()
+    {
+        var icon = new TaskbarIcon
+        {
+            ToolTipText = "Audio Switch",
+            IconSource = new BitmapImage(new Uri("ms-appx:///Assets/AppIcon.ico")),
+            MenuActivation = H.NotifyIcon.Core.PopupActivationMode.LeftOrRightClick
+        };
+        var menu = new MenuFlyout();
+        trayOpenItem = new MenuFlyoutItem { Text = Localization.Text("Menu_OpenSettings") };
+        trayOpenItem.Click += TrayOpen_Click;
+        menu.Items.Add(trayOpenItem);
+        trayMonitorItem = new MenuFlyoutItem { Text = Localization.Text("MainPage_StartMonitoring") };
+        trayMonitorItem.Click += TrayMonitor_Click;
+        menu.Items.Add(trayMonitorItem);
+        menu.Items.Add(new MenuFlyoutSeparator());
+        trayExitItem = new MenuFlyoutItem { Text = Localization.Text("Menu_Exit") };
+        trayExitItem.Click += TrayExit_Click;
+        menu.Items.Add(trayExitItem);
+        icon.ContextFlyout = menu;
+        return icon;
+    }
+
+    public void RefreshTrayLocalization()
+    {
+        trayOpenItem!.Text = Localization.Text("Menu_OpenSettings");
+        trayMonitorItem!.Text = Localization.Text("MainPage_StartMonitoring");
+        trayExitItem!.Text = Localization.Text("Menu_Exit");
+    }
+}

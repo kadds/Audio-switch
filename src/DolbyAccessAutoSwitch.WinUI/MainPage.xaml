@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="DolbyAccessAutoSwitch_WinUI.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:DolbyAccessAutoSwitch_WinUI"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Padding="12" RowSpacing="6" MinWidth="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="StatusText" Visibility="Collapsed" />
+
+        <Grid Grid.Row="0" ColumnSpacing="12" MinWidth="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ScrollViewer Grid.Column="0" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Auto" VerticalScrollBarVisibility="Disabled" HorizontalAlignment="Stretch">
+                <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="9" Padding="2" HorizontalAlignment="Left">
+                    <StackPanel Orientation="Horizontal" Spacing="1">
+                        <Button x:Name="ProcessRulesTabButton" Tag="0" Style="{StaticResource ActiveTabButtonStyle}" Click="TabButton_Click" ToolTipService.ToolTip="Process rules">
+                            <StackPanel Orientation="Horizontal" Spacing="7"><SymbolIcon Symbol="View" /><TextBlock x:Name="RulesTabTextBlock" Text="Rules" /></StackPanel>
+                        </Button>
+                        <Button x:Name="OutputDevicesTabButton" Tag="1" Style="{StaticResource TabButtonStyle}" Click="TabButton_Click" ToolTipService.ToolTip="Output devices">
+                            <StackPanel Orientation="Horizontal" Spacing="7"><SymbolIcon Symbol="Volume" /><TextBlock x:Name="OutputTabTextBlock" Text="Output" /></StackPanel>
+                        </Button>
+                        <Button x:Name="SpatialAudioTabButton" Tag="2" Style="{StaticResource TabButtonStyle}" Click="TabButton_Click" ToolTipService.ToolTip="Spatial audio">
+                            <StackPanel Orientation="Horizontal" Spacing="7"><SymbolIcon Symbol="Audio" /><TextBlock x:Name="SpatialTabTextBlock" Text="Spatial" /></StackPanel>
+                        </Button>
+                        <Button x:Name="GeneralTabButton" Tag="3" Style="{StaticResource TabButtonStyle}" Click="TabButton_Click" ToolTipService.ToolTip="General settings">
+                            <StackPanel Orientation="Horizontal" Spacing="7"><SymbolIcon Symbol="Setting" /><TextBlock x:Name="GeneralTabTextBlock" Text="General" /></StackPanel>
+                        </Button>
+                        <Button x:Name="NotificationsTabButton" Tag="4" Style="{StaticResource TabButtonStyle}" Click="TabButton_Click" ToolTipService.ToolTip="Notifications">
+                            <StackPanel Orientation="Horizontal" Spacing="7"><SymbolIcon Symbol="Message" /><TextBlock x:Name="NotificationsTabTextBlock" Text="Notifications" /></StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Border>
+            </ScrollViewer>
+            <Button x:Name="MonitorButton" Grid.Column="1" MinWidth="0" HorizontalAlignment="Right" Style="{StaticResource IconTextButtonStyle}" Click="MonitorButton_Click">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <SymbolIcon x:Name="MonitorButtonIcon" Symbol="Play" />
+                    <TextBlock x:Name="MonitorButtonText" Text="Start monitoring" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="1">
+                <Grid x:Name="ProcessRulesPage">
+                    <Grid ColumnSpacing="12" Padding="0,4,0,0" MinWidth="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="280" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <ScrollViewer Grid.Column="0" VerticalAlignment="Top" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" MinWidth="0">
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="12" VerticalAlignment="Top">
+                        <StackPanel Spacing="8">
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="ProcessTitleTextBlock" Text="Processes" Style="{StaticResource SubtitleTextBlockStyle}" VerticalAlignment="Center" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                    <Button x:Name="AddProcessButton" Style="{StaticResource IconOnlyButtonStyle}" Click="AddProcess_Click" ToolTipService.ToolTip="Add process">
+                                        <SymbolIcon Symbol="Add" />
+                                    </Button>
+                                    <Button x:Name="RemoveProcessButton" Style="{StaticResource IconOnlyButtonStyle}" Click="RemoveProcess_Click" ToolTipService.ToolTip="Remove selected process">
+                                        <SymbolIcon Symbol="Delete" />
+                                    </Button>
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock x:Name="ProcessDescriptionTextBlock" Text="Choose a process, then edit its output device and spatial audio preset on the right." Opacity="0.68" TextWrapping="Wrap" />
+                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Left">
+                                <Button x:Name="SelectProcessButton" Style="{StaticResource IconOnlyButtonStyle}" Click="SelectProcessButton_Click" ToolTipService.ToolTip="Select running process" AutomationProperties.Name="Select running process">
+                                    <SymbolIcon Symbol="Find" />
+                                </Button>
+                                <Button x:Name="OpenSelectButton" Style="{StaticResource IconOnlyButtonStyle}" Click="OpenSelectButton_Click" ToolTipService.ToolTip="Open or select an executable" AutomationProperties.Name="Open or select an executable">
+                                    <SymbolIcon Symbol="OpenFile" />
+                                </Button>
+                            </StackPanel>
+                            <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="9" Padding="2">
+                            <Grid MinHeight="88" MaxHeight="240">
+                            <ListView x:Name="ProcessListView" Background="Transparent" SelectionMode="Single" SelectionChanged="ProcessListView_SelectionChanged" RightTapped="ProcessListView_RightTapped" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Padding="4" ColumnSpacing="8" Opacity="{Binding DisplayOpacity}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="32" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Image Grid.Column="0" Width="24" Height="24" Source="{Binding IconSource}" Stretch="Uniform" />
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{Binding DisplayName}" />
+                                                <TextBlock Text="{Binding DisplayDescription}" Opacity="0.62" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                            <StackPanel x:Name="ProcessEmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="4" IsHitTestVisible="False">
+                                <SymbolIcon Symbol="Add" HorizontalAlignment="Center" Opacity="0.45" />
+                                <TextBlock x:Name="ProcessEmptyTitleTextBlock" Text="No processes configured" HorizontalAlignment="Center" Opacity="0.68" />
+                                <TextBlock x:Name="ProcessEmptyHintTextBlock" Text="Add one with + or select an .exe" HorizontalAlignment="Center" FontSize="12" Opacity="0.52" />
+                            </StackPanel>
+                            </Grid>
+                            </Border>
+                        </StackPanel>
+                        </Border>
+                        </ScrollViewer>
+
+                        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled" HorizontalAlignment="Stretch" MinWidth="0">
+                            <ContentControl x:Name="ProfileEditorHost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" />
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+
+                <Grid x:Name="OutputDevicesPage" Visibility="Collapsed">
+                    <Grid RowSpacing="8" Padding="4,10,4,4">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Border Style="{StaticResource CardBorderStyle}" Padding="14,10">
+                            <StackPanel Spacing="4">
+                                <TextBlock x:Name="OutputCurrentLabelTextBlock" Text="Current output device" Opacity="0.68" />
+                                <TextBlock x:Name="CurrentOutputDeviceText" Text="Reading current output device..." TextWrapping="Wrap" />
+                                <Grid ColumnSpacing="12" Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="OutputVolumeLabelTextBlock" Text="Output volume" VerticalAlignment="Center" />
+                                    <TextBlock x:Name="OutputVolumeValueTextBlock" Grid.Column="1" Text="--%" VerticalAlignment="Center" Opacity="0.72" />
+                                </Grid>
+                                <Slider x:Name="GlobalVolumeSlider" Minimum="0" Maximum="100" StepFrequency="1" Value="100" ValueChanged="GlobalVolumeSlider_ValueChanged" />
+                                <TextBlock x:Name="OutputVolumeHintTextBlock" Text="Controls the master volume of the current output device." Opacity="0.62" FontSize="12" />
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Grid.Row="1" Spacing="2" Margin="2,2,2,0">
+                            <TextBlock x:Name="OutputTitleTextBlock" Text="Active output devices" Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <TextBlock x:Name="OutputDevicesStatusText" Text="Current default is highlighted. Click an item to switch output." Opacity="0.68" />
+                        </StackPanel>
+                        <Border Grid.Row="2" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="2">
+                        <ListView x:Name="AllEndpointsListView" SelectionMode="Single" SelectionChanged="AllEndpointsListView_SelectionChanged" VerticalAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Padding="8" ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="28" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <SymbolIcon Symbol="Volume" VerticalAlignment="Center" Opacity="0.78" />
+                                        <StackPanel Grid.Column="1" Spacing="2">
+                                            <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding Details}" Opacity="0.68" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        </Border>
+                    </Grid>
+                </Grid>
+
+                <Grid x:Name="SpatialAudioPage" Visibility="Collapsed">
+                    <Grid RowSpacing="8" Padding="4,10,4,4">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <TextBlock x:Name="SpatialTitleTextBlock" Text="Spatial audio" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Padding="14,10">
+                            <StackPanel Spacing="2">
+                                <TextBlock x:Name="SpatialCurrentLabelTextBlock" Text="Current output device" Opacity="0.68" />
+                                <TextBlock x:Name="SpatialAudioCurrentOutputText" Text="Reading current output device..." TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                        <Border Grid.Row="2" Background="{ThemeResource SubtleFillColorSecondaryBrush}" CornerRadius="8" Padding="10,8">
+                            <TextBlock x:Name="SpatialAudioStatusText" Text="Reading spatial audio status..." Opacity="0.78" TextWrapping="Wrap" />
+                        </Border>
+                        <TextBlock Grid.Row="3" x:Name="SpatialOptionsTextBlock" Text="Windows spatial audio options - click to switch" Opacity="0.68" Margin="2,2,2,0" />
+                        <Border Grid.Row="4" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="2">
+                        <ListView x:Name="SpatialAudioOptionsListView" SelectionMode="Single" SelectionChanged="SpatialAudioOptionsListView_SelectionChanged" VerticalAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Padding="8" ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="28" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <SymbolIcon Symbol="Audio" VerticalAlignment="Center" Opacity="0.78" />
+                                        <StackPanel Grid.Column="1" Spacing="2">
+                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding Availability}" Opacity="0.58" FontSize="12" TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        </Border>
+                    </Grid>
+                </Grid>
+
+                <Grid x:Name="GeneralPage" Visibility="Collapsed">
+                    <ScrollViewer Padding="4,10,4,4" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="12" MaxWidth="720" HorizontalAlignment="Left">
+                            <TextBlock x:Name="GeneralTitleTextBlock" Text="Startup and behavior" Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <TextBlock x:Name="LanguageLabelTextBlock" Text="Interface language" Opacity="0.68" Margin="0,8,0,0" />
+                            <ComboBox x:Name="LanguageComboBox" SelectionChanged="LanguageComboBox_SelectionChanged">
+                                <ComboBoxItem Tag="System" Content="Follow system language" />
+                                <ComboBoxItem Tag="zh-CN" Content="简体中文" />
+                                <ComboBoxItem Tag="en-US" Content="English" />
+                            </ComboBox>
+                            <TextBlock x:Name="LanguageHintTextBlock" Text="System follows the Windows UI language. You can also choose Chinese or English." Opacity="0.68" TextWrapping="Wrap" />
+                            <CheckBox x:Name="StartWithWindowsCheckBox" Content="Start with Windows" Click="GeneralOption_Click" />
+                            <CheckBox x:Name="StartSilentCheckBox" Content="Start hidden in tray" Click="GeneralOption_Click" />
+                            <CheckBox x:Name="StartMonitorCheckBox" Content="Start monitoring automatically" Click="GeneralOption_Click" />
+                            <CheckBox x:Name="VolumeProtectionCheckBox" Content="Limit volume to 80%" Click="GeneralOption_Click" />
+                            <TextBlock x:Name="VolumeProtectionHintTextBlock" Text="When enabled, global and per-process volume changes cannot exceed 80%." Opacity="0.68" TextWrapping="Wrap" />
+                            <TextBlock x:Name="IntervalLabelTextBlock" Text="Process scan interval (seconds)" Opacity="0.68" Margin="0,8,0,0" />
+                            <NumberBox x:Name="MonitorIntervalNumberBox" Minimum="1" Maximum="60" SmallChange="1" SpinButtonPlacementMode="Compact" ValueChanged="MonitorIntervalNumberBox_ValueChanged" />
+                            <TextBlock x:Name="IntervalHintTextBlock" Text="Lower values detect process start faster but scan more often." Opacity="0.68" TextWrapping="Wrap" />
+                            <TextBlock x:Name="TrayHintTextBlock" Text="The tray process stays silent while you play. Open settings from the tray menu." Opacity="0.68" TextWrapping="Wrap" />
+                            <TextBlock x:Name="LogExportTitleTextBlock" Text="Logs" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,8,0,0" />
+                            <TextBlock x:Name="LogExportHintTextBlock" Text="Background switching and audio API results can be exported as a text file." Opacity="0.68" TextWrapping="Wrap" />
+                            <Button x:Name="ExportLogButton" Style="{StaticResource IconTextButtonStyle}" Click="ExportLogButton_Click" HorizontalAlignment="Left">
+                                <StackPanel Orientation="Horizontal" Spacing="7"><SymbolIcon Symbol="Save" /><TextBlock x:Name="ExportLogTextBlock" Text="Export log" /></StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <Grid x:Name="NotificationsPage" Visibility="Collapsed">
+                    <ScrollViewer Padding="4,10,4,4" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="12" MaxWidth="820" HorizontalAlignment="Left">
+                            <TextBlock x:Name="NotificationsTitleTextBlock" Text="Notifications" Style="{StaticResource SubtitleTextBlockStyle}" />
+                            <TextBlock x:Name="NotificationsHintTextBlock" Text="Choose how Audio Switch reports output-device and spatial-audio changes." Opacity="0.68" TextWrapping="Wrap" />
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" Style="{StaticResource CardBorderStyle}" Padding="14,12">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock x:Name="OutputNotificationTitleTextBlock" Text="Output device changes" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                        <TextBlock x:Name="OutputNotificationLabelTextBlock" Text="When the default output device changes" Opacity="0.68" TextWrapping="Wrap" />
+                                        <ComboBox x:Name="OutputNotificationModeComboBox" SelectionChanged="NotificationMode_SelectionChanged" HorizontalAlignment="Stretch">
+                                            <ComboBoxItem Tag="none" Content="Do not notify" />
+                                            <ComboBoxItem Tag="system" Content="System notification" />
+                                            <ComboBoxItem Tag="in-app" Content="In-app floating message" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource CardBorderStyle}" Padding="14,12">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock x:Name="SpatialNotificationTitleTextBlock" Text="Spatial audio changes" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                        <TextBlock x:Name="SpatialNotificationLabelTextBlock" Text="When the system spatial-audio format changes" Opacity="0.68" TextWrapping="Wrap" />
+                                        <ComboBox x:Name="SpatialNotificationModeComboBox" SelectionChanged="NotificationMode_SelectionChanged" HorizontalAlignment="Stretch">
+                                            <ComboBoxItem Tag="none" Content="Do not notify" />
+                                            <ComboBoxItem Tag="system" Content="System notification" />
+                                            <ComboBoxItem Tag="in-app" Content="In-app floating message" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                            <TextBlock x:Name="NotificationModeHintTextBlock" Text="System notifications use Windows notifications. In-app messages appear briefly in the upper-right corner." Opacity="0.68" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+        </Grid>
+
+        <Border x:Name="InAppNotificationBanner" Grid.RowSpan="2" Width="360" MaxWidth="360" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,12,12,0" Padding="0" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="4" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="12,0,0,12" />
+                <Border Grid.Column="1" Width="34" Height="34" Margin="12,12,10,12" Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="17">
+                    <SymbolIcon Symbol="Volume" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="2" Margin="0,10,4,10">
+                    <TextBlock x:Name="InAppNotificationTitleTextBlock" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="InAppNotificationBodyTextBlock" FontSize="12" Opacity="0.72" TextWrapping="Wrap" MaxLines="2" />
+                </StackPanel>
+                <Button x:Name="DismissInAppNotificationButton" Grid.Column="3" Style="{StaticResource IconOnlyButtonStyle}" Margin="0,0,8,0" Click="DismissInAppNotification_Click" AutomationProperties.Name="Dismiss notification">
+                    <SymbolIcon Symbol="Clear" />
+                </Button>
+            </Grid>
+        </Border>
+    </Grid>
+</Page>

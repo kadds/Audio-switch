@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DolbyAccessAutoSwitch.WinUI (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "DolbyAccessAutoSwitch.WinUI (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

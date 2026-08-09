@@ -1,0 +1,32 @@
+# .NET / WinUI build output
+**/bin/
+**/obj/
+.vs/
+TestResults/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local research output and runtime state
+/work/
+/.tmp-*/
+*.log
+*.tmp
+*.bak
+*.dmp
+
+# Generated packages and binaries
+*.exe
+*.dll
+*.pdb
+*.appx
+*.msix
+*.msixbundle
+*.nupkg
+
+# Local IDE / OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
