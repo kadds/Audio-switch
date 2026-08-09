@@ -23,10 +23,10 @@ public sealed class ProcessSwitchItem
     public ProcessMatchMode MatchMode { get; set; } = ProcessMatchMode.FullPath;
     public bool ForegroundOnly { get; set; } = true;
     public int? PriorityOverride { get; set; }
-    public float? VolumePercent { get; set; }
     public string Description { get; set; } = string.Empty;
     public string IconPath { get; set; } = string.Empty;
     public string EndpointFile { get; set; } = string.Empty;
+    public float? GlobalVolumePercent { get; set; }
     public string ActiveProfile { get; set; } = "Game";
     public string ActiveSpatialAudioModeId { get; set; } = "keep";
     [XmlIgnore]
@@ -443,7 +443,7 @@ public static class SpatialAudioModeCatalog
         new SpatialAudioOption { Id = "off", NameKey = "Spatial_Off.Name", AvailabilityKey = "Spatial_Off.Availability", FormatSubtype = string.Empty },
         new SpatialAudioOption { Id = "windows-sonic", NameKey = "Spatial_WindowsSonic.Name", AvailabilityKey = "Spatial_WindowsSonic.Availability", FormatSubtype = SpatialAudioFormatSubtype.WindowsSonic },
         new SpatialAudioOption { Id = "dolby-atmos-headphones", NameKey = "Spatial_Dolby.Name", AudioProfileProviderId = "dolby-capx", AvailabilityKey = "Spatial_Dolby.Availability", FormatSubtype = SpatialAudioFormatSubtype.DolbyAtmosForHeadphones },
-        new SpatialAudioOption { Id = "dts-headphone-x", NameKey = "Spatial_Dts.Name", AvailabilityKey = "Spatial_Dts.Availability", FormatSubtype = SpatialAudioFormatSubtype.DTSHeadphoneX }
+        new SpatialAudioOption { Id = "dts-headphone-x", NameKey = "Spatial_Dts.Name", AudioProfileProviderId = "dts-capx", AvailabilityKey = "Spatial_Dts.Availability", FormatSubtype = SpatialAudioFormatSubtype.DTSHeadphoneX }
     };
 
     public static IReadOnlyList<SpatialAudioOption> ProcessOptions { get; } = new[]
@@ -549,17 +549,19 @@ public static class AudioSystemState
                 return $"C# spatial format unchanged: {option.Name}; switch API skipped";
             }
 
-            SetDefaultSpatialAudioFormatResult result = await configuration.SetDefaultSpatialAudioFormatAsync(option.FormatSubtype);
+            // Off has no public SpatialAudioFormatSubtype. Windows stores it as
+            // GUID_NULL, so use the documented GUID-shaped value first. Keep the
+            // other representations as fallbacks for older Windows builds.
+            SetDefaultSpatialAudioFormatResult result = option.Id == "off"
+                ? await SetSpatialAudioOffAsync(configuration)
+                : await configuration.SetDefaultSpatialAudioFormatAsync(option.FormatSubtype);
 
             // Windows updates the endpoint configuration asynchronously. Read it
             // back after the call so Off is not reported as failed merely because
             // the UI refreshed before the endpoint had published the new value.
             string defaultFormat = configuration.DefaultSpatialAudioFormat ?? string.Empty;
             string activeFormat = configuration.ActiveSpatialAudioFormat ?? string.Empty;
-            for (int attempt = 0; attempt < 3 && !string.Equals(
-                SpatialAudioModeCatalog.FindByFormat(defaultFormat).Id,
-                option.Id,
-                StringComparison.OrdinalIgnoreCase); attempt++)
+            for (int attempt = 0; attempt < 3 && !SpatialFormatReadbackMatches(defaultFormat, option.Id); attempt++)
             {
                 await Task.Delay(100);
                 defaultFormat = configuration.DefaultSpatialAudioFormat ?? string.Empty;
@@ -571,8 +573,13 @@ public static class AudioSystemState
             if (result.Status == SetDefaultSpatialAudioFormatStatus.AccessDenied)
             {
                 return option.Id == "off"
-                    ? "C# spatial format Off unavailable: Windows denied clearing the provider-owned spatial format (AccessDenied). Choose Off once in Windows Sound settings; this app can still switch the owned formats directly."
+                    ? "C# spatial format Off unavailable: Windows denied clearing the provider-owned spatial format (AccessDenied); the public WinRT API does not expose an Off subtype for this endpoint."
                     : $"C# spatial format {option.Name} unavailable: the provider denied this app (AccessDenied); default={readbackDefault}; active={readbackActive}";
+            }
+
+            if (!SpatialFormatReadbackMatches(defaultFormat, option.Id))
+            {
+                return $"C# spatial format {option.Name} not confirmed after {result.Status}; default={readbackDefault}; active={readbackActive}";
             }
 
             return $"C# spatial format {option.Name}: {result.Status}; default={readbackDefault}; active={readbackActive}";
@@ -581,6 +588,46 @@ public static class AudioSystemState
         {
             return $"C# spatial format {option.Name} failed: {ex.Message}";
         }
+    }
+
+    private static bool SpatialFormatReadbackMatches(string? format, string modeId)
+    {
+        if (string.Equals(modeId, "off", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.IsNullOrWhiteSpace(format) ||
+                (Guid.TryParse(format, out Guid parsed) && parsed == Guid.Empty);
+        }
+
+        return string.Equals(
+            SpatialAudioModeCatalog.FindByFormat(format).Id,
+            modeId,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<SetDefaultSpatialAudioFormatResult> SetSpatialAudioOffAsync(
+        SpatialAudioDeviceConfiguration configuration)
+    {
+        SetDefaultSpatialAudioFormatResult? lastResult = null;
+        foreach (string clearValue in new[]
+        {
+            Guid.Empty.ToString("D"),
+            Guid.Empty.ToString("B"),
+            string.Empty
+        })
+        {
+            SetDefaultSpatialAudioFormatResult result =
+                await configuration.SetDefaultSpatialAudioFormatAsync(clearValue);
+            lastResult = result;
+
+            string readback = configuration.DefaultSpatialAudioFormat ?? string.Empty;
+            if (result.Status == SetDefaultSpatialAudioFormatStatus.Succeeded &&
+                SpatialFormatReadbackMatches(readback, "off"))
+            {
+                return result;
+            }
+        }
+
+        return lastResult!;
     }
 
     private static string? ReadDefaultEndpointPathFromCoreAudio()
@@ -725,7 +772,11 @@ public interface IAudioProfileProvider
 
 public static class AudioProfileProviderRegistry
 {
-    public static IReadOnlyList<IAudioProfileProvider> Providers { get; } = new[] { (IAudioProfileProvider)new DolbyCapxProfileProvider() };
+    public static IReadOnlyList<IAudioProfileProvider> Providers { get; } = new[]
+    {
+        (IAudioProfileProvider)new DolbyCapxProfileProvider(),
+        new DtsCapxProfileProvider()
+    };
 
     public static IAudioProfileProvider Find(string id) => Providers.FirstOrDefault(provider => string.Equals(provider.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Providers[0];
 
@@ -915,6 +966,227 @@ public sealed class DolbyCapxProfileProvider : IAudioProfileProvider
         int end = endpointPath.IndexOf("}#{", start + 3, StringComparison.Ordinal);
         if (start < 0 || end < 0) throw new ArgumentException("Invalid audio endpoint path.", nameof(endpointPath));
         return endpointPath.Substring(start + 2, end - start - 1);
+    }
+
+    private static class DesktopPackageActivator
+    {
+        [ComImport]
+        [Guid("168EB462-775F-42AE-9111-D714B2306C2E")]
+        private sealed class ActivatorClass
+        {
+        }
+
+        [ComImport]
+        [Guid("F158268A-D5A5-45CE-99CF-00D6C3F3FC0A")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IDesktopAppXActivator
+        {
+            void Activate(
+                [MarshalAs(UnmanagedType.LPWStr)] string applicationUserModelId,
+                [MarshalAs(UnmanagedType.LPWStr)] string executable,
+                [MarshalAs(UnmanagedType.LPWStr)] string arguments,
+                out uint processId);
+
+            void ActivateWithOptions(
+                [MarshalAs(UnmanagedType.LPWStr)] string applicationUserModelId,
+                [MarshalAs(UnmanagedType.LPWStr)] string executable,
+                [MarshalAs(UnmanagedType.LPWStr)] string arguments,
+                uint options,
+                uint parentProcessId,
+                out uint processId);
+        }
+
+        public static uint Start(string applicationUserModelId, string executable, string arguments)
+        {
+            object activatorObject = new ActivatorClass();
+            IDesktopAppXActivator activator = (IDesktopAppXActivator)activatorObject;
+            activator.ActivateWithOptions(
+                applicationUserModelId,
+                executable,
+                arguments,
+                DesktopPackageActivationOptions,
+                0,
+                out uint processId);
+            return processId;
+        }
+    }
+}
+
+public sealed class DtsCapxProfileProvider : IAudioProfileProvider
+{
+    private const string DtsPackageFamilyName = "DTSInc.DTSSoundUnbound_t5j2fzbtdg37r";
+    private const string DtsAppId = "App";
+    private const uint DesktopPackageActivationOptions = 4 | 16 | 32;
+    private static readonly IReadOnlyDictionary<string, string> ProfileFiles =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // These are the partner SAD profiles shipped by the installed DTS
+            // Sound Unbound package. Keep the user-facing names aligned with
+            // the package resources instead of inventing Natural/Spacious
+            // aliases that lose the Gaming/Movies distinction.
+            ["Gaming: Balanced"] = "2403-GamingBalanced.SPAC.crypt",
+            ["Gaming: Neutral"] = "2403-GamingNeutral.SPAC.crypt",
+            ["Gaming: Spacious"] = "2403-GamingSpacious.SPAC.crypt",
+            ["Gaming: Spacious 2"] = "2403-GamingSpacious2.SPAC.crypt",
+            ["Movies: Balanced"] = "2403-MoviesBalanced.SPAC.crypt",
+            ["Movies: Spacious"] = "2403-MoviesSpacious.SPAC.crypt"
+        };
+
+    public string Id => "dts-capx";
+    public string DisplayName => "DTS Sound Unbound / CAPX";
+    public string DefaultActiveProfile => "Gaming: Neutral";
+    public IReadOnlyList<string> SupportedProfiles =>
+        ProfileFiles.Keys.Where(profile => DtsResourceCatalog.TryFindProfileFile(ProfileFiles[profile], out _)).ToArray();
+
+    public bool SupportsProfile(string profile) =>
+        ProfileFiles.ContainsKey(profile) && DtsResourceCatalog.TryFindProfileFile(ProfileFiles[profile], out _);
+
+    public bool TryProbe(AudioEndpointChoice endpoint)
+    {
+        if (!DtsResourceCatalog.IsInstalled || !File.Exists(HelperPath)) return false;
+
+        try
+        {
+            DtsHelperResult result = InvokeHelper(endpoint.EndpointPath, "-", apply: false);
+            if (!result.Supported) return false;
+            endpoint.ProbeStatus = "C# DTS CAPX / supported";
+            return true;
+        }
+        catch
+        {
+            // DTS can be installed without owning the current endpoint. That is
+            // a normal non-match, not a probe failure that should pollute the UI.
+            return false;
+        }
+    }
+
+    public string InvokeSetter(string endpointPath, string profile, bool apply)
+    {
+        if (!ProfileFiles.TryGetValue(profile, out string? fileName))
+        {
+            throw new ArgumentException($"Unsupported DTS spatial audio preset: {profile}", nameof(profile));
+        }
+
+        if (!DtsResourceCatalog.TryFindProfileFile(fileName, out string? profilePath))
+        {
+            throw new FileNotFoundException($"DTS Sound Unbound profile '{profile}' is not installed.", fileName);
+        }
+
+        if (!apply)
+        {
+            return $"C# dry-run: DTS SAD profile -> {profile} ({Path.GetFileName(profilePath)})";
+        }
+
+        DtsHelperResult result = InvokeHelper(endpointPath, profilePath, apply: true, force: true);
+        if (!result.Supported && !result.Forced)
+        {
+            return "DTS CAPX does not support this endpoint; live profile was not changed";
+        }
+
+        if (!result.SadWrite)
+        {
+            return $"DTS SAD profile {profile} was rejected by the DTS provider; live profile was not changed";
+        }
+
+        string forced = result.Forced ? "; forced despite IsCAPxSupported=false" : string.Empty;
+        return $"DTS SAD profile {profile} write succeeded ({result.BlobBytes} bytes; transaction={result.Transaction}{forced})";
+    }
+
+    private static string HelperPath => Path.Combine(AppContext.BaseDirectory, "tools", "bin", "DtsSetProfile.exe");
+
+    private static DtsHelperResult InvokeHelper(string endpointPath, string profilePath, bool apply, bool force = false)
+    {
+        string token = Guid.NewGuid().ToString("N");
+        string outputFile = Path.Combine(Path.GetTempPath(), $"AudioSwitch-Dts-{token}.json");
+        try
+        {
+            string arguments = string.Join(" ",
+                QuoteCommandLineArgument(endpointPath),
+                QuoteCommandLineArgument(profilePath),
+                QuoteCommandLineArgument(outputFile),
+                apply ? QuoteCommandLineArgument("--apply") : string.Empty,
+                force ? QuoteCommandLineArgument("--force") : string.Empty);
+
+            _ = DesktopPackageActivator.Start(
+                DtsPackageFamilyName + "!" + DtsAppId,
+                HelperPath,
+                arguments);
+
+            WaitForHelper(outputFile);
+            if (!File.Exists(outputFile)) throw new IOException("The C# DTS helper did not produce a result.");
+
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(outputFile));
+            JsonElement root = document.RootElement;
+            if (root.TryGetProperty("errorType", out JsonElement errorType) || root.TryGetProperty("error", out _))
+            {
+                string message = root.TryGetProperty("message", out JsonElement errorMessage)
+                    ? errorMessage.GetString() ?? "unknown error"
+                    : root.ToString();
+                throw new InvalidOperationException($"DTS helper failed ({errorType.GetString() ?? "error"}): {message}");
+            }
+
+            return new DtsHelperResult(
+                root.TryGetProperty("supported", out JsonElement supported) && supported.GetBoolean(),
+                root.TryGetProperty("forced", out JsonElement forced) && forced.GetBoolean(),
+                root.TryGetProperty("sadWrite", out JsonElement sadWrite) && sadWrite.GetBoolean(),
+                root.TryGetProperty("transaction", out JsonElement transaction) && transaction.GetBoolean(),
+                root.TryGetProperty("blobBytes", out JsonElement blobBytes) ? blobBytes.GetInt32() : 0);
+        }
+        finally
+        {
+            try { if (File.Exists(outputFile)) File.Delete(outputFile); } catch { }
+        }
+    }
+
+    private static void WaitForHelper(string outputFile)
+    {
+        for (int attempt = 0; attempt < 150; attempt++)
+        {
+            if (File.Exists(outputFile) && new FileInfo(outputFile).Length > 0) return;
+            Thread.Sleep(100);
+        }
+
+        throw new TimeoutException("The C# DTS helper timed out.");
+    }
+
+    private static string QuoteCommandLineArgument(string value) =>
+        "\"" + value.Replace("\"", "\\\"") + "\"";
+
+    private sealed record DtsHelperResult(bool Supported, bool Forced, bool SadWrite, bool Transaction, int BlobBytes);
+
+    private static class DtsResourceCatalog
+    {
+        private static readonly Lazy<string?> PackageRoot = new(FindPackageRoot);
+
+        public static bool IsInstalled => PackageRoot.Value != null;
+
+        public static bool TryFindProfileFile(string fileName, out string path)
+        {
+            string? root = PackageRoot.Value;
+            path = root == null ? string.Empty : Path.Combine(root, "Data", "SAD", fileName);
+            return !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+        }
+
+        private static string? FindPackageRoot()
+        {
+            string windowsApps = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "WindowsApps");
+            try
+            {
+                return Directory.EnumerateDirectories(
+                        windowsApps,
+                        "DTSInc.DTSSoundUnbound_*__t5j2fzbtdg37r",
+                        SearchOption.TopDirectoryOnly)
+                    .Where(directory => Directory.Exists(Path.Combine(directory, "Data", "SAD")))
+                    .OrderByDescending(directory => directory, StringComparer.OrdinalIgnoreCase)
+                    .FirstOrDefault();
+            }
+            catch
+            {
+                return null;
+            }
+        }
     }
 
     private static class DesktopPackageActivator

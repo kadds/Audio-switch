@@ -177,6 +177,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <TextBlock x:Name="SpatialTitleTextBlock" Text="Spatial audio" Style="{StaticResource SubtitleTextBlockStyle}" />
@@ -189,8 +190,15 @@
                         <Border Grid.Row="2" Background="{ThemeResource SubtleFillColorSecondaryBrush}" CornerRadius="8" Padding="10,8">
                             <TextBlock x:Name="SpatialAudioStatusText" Text="Reading spatial audio status..." Opacity="0.78" TextWrapping="Wrap" />
                         </Border>
-                        <TextBlock Grid.Row="3" x:Name="SpatialOptionsTextBlock" Text="Windows spatial audio options - click to switch" Opacity="0.68" Margin="2,2,2,0" />
-                        <Border Grid.Row="4" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="2">
+                        <Border Grid.Row="3" Style="{StaticResource CardBorderStyle}" Padding="14,10">
+                            <StackPanel Spacing="4">
+                                <TextBlock x:Name="SpatialDefaultProfileTitleTextBlock" Text="Default profile" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <TextBlock x:Name="SpatialDefaultProfileHintTextBlock" Text="Used when no process rule matches the foreground window." Opacity="0.68" TextWrapping="Wrap" />
+                                <ComboBox x:Name="SpatialDefaultProfileComboBox" SelectionChanged="SpatialDefaultProfileComboBox_SelectionChanged" HorizontalAlignment="Left" MinWidth="220" />
+                            </StackPanel>
+                        </Border>
+                        <TextBlock Grid.Row="4" x:Name="SpatialOptionsTextBlock" Text="Windows spatial audio options - click to switch" Opacity="0.68" Margin="2,2,2,0" />
+                        <Border Grid.Row="5" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="2">
                         <ListView x:Name="SpatialAudioOptionsListView" SelectionMode="Single" SelectionChanged="SpatialAudioOptionsListView_SelectionChanged" VerticalAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto">
                             <ListView.ItemTemplate>
                                 <DataTemplate>
@@ -227,7 +235,7 @@
                             <CheckBox x:Name="StartSilentCheckBox" Content="Start hidden in tray" Click="GeneralOption_Click" />
                             <CheckBox x:Name="StartMonitorCheckBox" Content="Start monitoring automatically" Click="GeneralOption_Click" />
                             <CheckBox x:Name="VolumeProtectionCheckBox" Content="Limit volume to 80%" Click="GeneralOption_Click" />
-                            <TextBlock x:Name="VolumeProtectionHintTextBlock" Text="When enabled, global and per-process volume changes cannot exceed 80%." Opacity="0.68" TextWrapping="Wrap" />
+                            <TextBlock x:Name="VolumeProtectionHintTextBlock" Text="When enabled, global volume changes cannot exceed 80%." Opacity="0.68" TextWrapping="Wrap" />
                             <TextBlock x:Name="IntervalLabelTextBlock" Text="Process scan interval (seconds)" Opacity="0.68" Margin="0,8,0,0" />
                             <NumberBox x:Name="MonitorIntervalNumberBox" Minimum="1" Maximum="60" SmallChange="1" SpinButtonPlacementMode="Compact" ValueChanged="MonitorIntervalNumberBox_ValueChanged" />
                             <TextBlock x:Name="IntervalHintTextBlock" Text="Lower values detect process start faster but scan more often." Opacity="0.68" TextWrapping="Wrap" />

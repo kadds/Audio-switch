@@ -35,6 +35,8 @@
   <data name="MainPage_OutputTitle.Text"><value>Active output devices</value></data>
   <data name="MainPage_OutputStatus.Text"><value>Current default is highlighted. Click an item to switch output.</value></data>
   <data name="MainPage_SpatialTitle.Text"><value>Spatial audio</value></data>
+  <data name="MainPage_SpatialDefaultProfileTitle.Text"><value>Default profile</value></data>
+  <data name="MainPage_SpatialDefaultProfileHint.Text"><value>Used when no process rule matches the foreground window.</value></data>
   <data name="MainPage_SpatialOptions.Text"><value>Windows spatial audio options - click to switch</value></data>
   <data name="MainPage_GeneralTitle.Text"><value>Startup and behavior</value></data>
   <data name="MainPage_LanguageLabel.Text"><value>Interface language</value></data>
@@ -43,7 +45,7 @@
   <data name="MainPage_StartSilent.Content"><value>Start hidden in tray</value></data>
   <data name="MainPage_StartMonitor.Content"><value>Start monitoring automatically</value></data>
   <data name="MainPage_VolumeProtection.Content"><value>Limit volume to 80%</value></data>
-  <data name="MainPage_VolumeProtectionHint.Text"><value>When enabled, global and per-process volume changes cannot exceed 80%.</value></data>
+  <data name="MainPage_VolumeProtectionHint.Text"><value>When enabled, global volume changes cannot exceed 80%.</value></data>
   <data name="MainPage_IntervalLabel.Text"><value>Process scan interval (seconds)</value></data>
   <data name="MainPage_IntervalHint.Text"><value>Lower values detect process start faster but scan more often.</value></data>
   <data name="MainPage_TrayHint.Text"><value>The tray process stays silent while you play. Open settings from the tray menu.</value></data>
@@ -96,10 +98,10 @@
   <data name="ProcessProfile_OutputDevice.Text"><value>Output device</value></data>
   <data name="ProcessProfile_KeepCurrentOutput.Value"><value>Keep current output device</value></data>
   <data name="ProcessProfile_OutputHint.Text"><value>When this process runs, route its audio streams to this endpoint.</value></data>
-  <data name="ProcessProfile_ProcessVolume.Text"><value>Process volume</value></data>
-  <data name="ProcessProfile_ProcessVolumeEnabled.Content"><value>Set volume for this process</value></data>
-  <data name="ProcessProfile_ProcessVolumeHint.Text"><value>Disabled means keep the current process volume.</value></data>
-  <data name="ProcessProfile_KeepCurrentVolume.Value"><value>Keep current</value></data>
+  <data name="ProcessProfile_GlobalVolume.Text"><value>Global volume when matched</value></data>
+  <data name="ProcessProfile_GlobalVolumeEnabled.Content"><value>Set global volume when this rule matches</value></data>
+  <data name="ProcessProfile_GlobalVolumeHint.Text"><value>Disabled means keep the current global volume.</value></data>
+  <data name="ProcessProfile_KeepCurrentGlobalVolume.Value"><value>Keep current global volume</value></data>
   <data name="ProcessProfile_CurrentSpatial.Text"><value>Current spatial audio</value></data>
   <data name="ProcessProfile_SpatialLogic.Text"><value>Spatial audio logic</value></data>
   <data name="ProcessProfile_SpatialHint.Text"><value>The spatial format selects its provider automatically. Presets are available only when that format exposes one.</value></data>

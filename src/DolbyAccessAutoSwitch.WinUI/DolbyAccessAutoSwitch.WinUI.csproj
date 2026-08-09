@@ -45,12 +45,32 @@
       <Link>src\CapxSetProfile.cs</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\..\src\DtsSetProfile.cs">
+      <Link>src\DtsSetProfile.cs</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\..\tools\bin\CapxProbe.exe">
       <Link>tools\bin\CapxProbe.exe</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\..\tools\bin\CapxSetProfile.exe">
       <Link>tools\bin\CapxSetProfile.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\tools\bin\DtsSetProfile.exe">
+      <Link>tools\bin\DtsSetProfile.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\tools\bin\DtsSetProfile.dll">
+      <Link>tools\bin\DtsSetProfile.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\tools\bin\DtsSetProfile.deps.json">
+      <Link>tools\bin\DtsSetProfile.deps.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\tools\bin\DtsSetProfile.runtimeconfig.json">
+      <Link>tools\bin\DtsSetProfile.runtimeconfig.json</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

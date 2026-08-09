@@ -7,7 +7,7 @@ namespace DolbyAccessAutoSwitch_WinUI;
 public sealed partial class ProcessProfileView : UserControl
 {
     private bool suppressChanges = true;
-    private bool volumeProtectionEnabled;
+    private bool volumeProtectionEnabled = true;
 
     public ProcessSwitchItem Model { get; }
     public AudioEndpointChoice? SelectedEndpoint => EndpointComboBox.SelectedItem as AudioEndpointChoice;
@@ -26,10 +26,10 @@ public sealed partial class ProcessProfileView : UserControl
         MatchModeComboBox.SelectedIndex = model.MatchMode == ProcessMatchMode.FullPath ? 1 : 0;
         ForegroundOnlyCheckBox.IsChecked = model.ForegroundOnly;
         PriorityOverrideNumberBox.Value = model.PriorityOverride ?? double.NaN;
-        ProcessVolumeEnabledCheckBox.IsChecked = model.VolumePercent.HasValue;
-        ProcessVolumeSlider.Value = model.VolumePercent ?? 100;
-        ProcessVolumeSlider.IsEnabled = model.VolumePercent.HasValue;
-        RefreshProcessVolumeText();
+        GlobalVolumeEnabledCheckBox.IsChecked = model.GlobalVolumePercent.HasValue;
+        GlobalVolumeSlider.Value = model.GlobalVolumePercent ?? 100;
+        GlobalVolumeSlider.IsEnabled = model.GlobalVolumePercent.HasValue;
+        RefreshGlobalVolumeText();
         ActiveSpatialAudioModeComboBox.ItemsSource = SpatialAudioModeCatalog.ProcessOptions;
         ActiveSpatialAudioModeComboBox.SelectedItem = SpatialAudioModeCatalog.FindById(model.ActiveSpatialAudioModeId);
         model.ActiveSpatialAudioModeId = (ActiveSpatialAudioModeComboBox.SelectedItem as SpatialAudioOption)?.Id ?? "keep";
@@ -46,20 +46,22 @@ public sealed partial class ProcessProfileView : UserControl
         volumeProtectionEnabled = enabled;
         float maximum = VolumeSafety.MaximumPercent(enabled);
         suppressChanges = true;
-        ProcessVolumeSlider.Maximum = maximum;
-        if (Model.VolumePercent is float volume)
+        GlobalVolumeSlider.Maximum = maximum;
+        if (Model.GlobalVolumePercent is float volume)
         {
             float safeVolume = VolumeSafety.Clamp(volume, enabled);
             changed = Math.Abs(safeVolume - volume) > 0.001f;
-            Model.VolumePercent = safeVolume;
-            ProcessVolumeSlider.Value = safeVolume;
+            Model.GlobalVolumePercent = safeVolume;
+            GlobalVolumeSlider.Value = safeVolume;
         }
         else
         {
-            ProcessVolumeSlider.Value = Math.Min(ProcessVolumeSlider.Value, maximum);
+            GlobalVolumeSlider.Value = Math.Min(GlobalVolumeSlider.Value, maximum);
         }
+        GlobalVolumeEnabledCheckBox.IsChecked = Model.GlobalVolumePercent.HasValue;
+        GlobalVolumeSlider.IsEnabled = Model.GlobalVolumePercent.HasValue;
         suppressChanges = false;
-        RefreshProcessVolumeText();
+        RefreshGlobalVolumeText();
         return changed;
     }
 
@@ -77,10 +79,10 @@ public sealed partial class ProcessProfileView : UserControl
         PriorityOverrideHintTextBlock.Text = Localization.Text("ProcessProfile_PriorityHint");
         OutputDeviceTitleTextBlock.Text = Localization.Text("ProcessProfile_OutputDevice");
         OutputHintTextBlock.Text = Localization.Text("ProcessProfile_OutputHint");
-        ProcessVolumeLabelTextBlock.Text = Localization.Text("ProcessProfile_ProcessVolume");
-        ProcessVolumeEnabledCheckBox.Content = Localization.Content("ProcessProfile_ProcessVolumeEnabled");
-        ProcessVolumeHintTextBlock.Text = Localization.Text("ProcessProfile_ProcessVolumeHint");
-        RefreshProcessVolumeText();
+        GlobalVolumeLabelTextBlock.Text = Localization.Text("ProcessProfile_GlobalVolume");
+        GlobalVolumeEnabledCheckBox.Content = Localization.Content("ProcessProfile_GlobalVolumeEnabled");
+        GlobalVolumeHintTextBlock.Text = Localization.Text("ProcessProfile_GlobalVolumeHint");
+        RefreshGlobalVolumeText();
         CurrentSpatialTextBlock.Text = Localization.Text("ProcessProfile_CurrentSpatial");
         SpatialLogicTextBlock.Text = Localization.Text("ProcessProfile_SpatialLogic");
         SpatialHintTextBlock.Text = Localization.Text("ProcessProfile_SpatialHint");
@@ -205,33 +207,33 @@ public sealed partial class ProcessProfileView : UserControl
         if (!suppressChanges) SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ProcessVolumeEnabledCheckBox_Click(object sender, RoutedEventArgs e)
+    private void GlobalVolumeEnabledCheckBox_Click(object sender, RoutedEventArgs e)
     {
-        bool enabled = ProcessVolumeEnabledCheckBox.IsChecked == true;
-        ProcessVolumeSlider.IsEnabled = enabled;
-        Model.VolumePercent = enabled
-            ? VolumeSafety.Clamp((float)ProcessVolumeSlider.Value, volumeProtectionEnabled)
+        bool enabled = GlobalVolumeEnabledCheckBox.IsChecked == true;
+        GlobalVolumeSlider.IsEnabled = enabled;
+        Model.GlobalVolumePercent = enabled
+            ? VolumeSafety.Clamp((float)GlobalVolumeSlider.Value, volumeProtectionEnabled)
             : null;
-        RefreshProcessVolumeText();
+        RefreshGlobalVolumeText();
         if (!suppressChanges) SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void ProcessVolumeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs args)
+    private void GlobalVolumeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs args)
     {
-        if (ProcessVolumeEnabledCheckBox.IsChecked == true && !double.IsNaN(args.NewValue))
+        if (GlobalVolumeEnabledCheckBox.IsChecked == true && !double.IsNaN(args.NewValue))
         {
-            Model.VolumePercent = VolumeSafety.Clamp((float)args.NewValue, volumeProtectionEnabled);
+            Model.GlobalVolumePercent = VolumeSafety.Clamp((float)args.NewValue, volumeProtectionEnabled);
         }
 
-        RefreshProcessVolumeText();
-        if (!suppressChanges && ProcessVolumeEnabledCheckBox.IsChecked == true) SettingsChanged?.Invoke(this, EventArgs.Empty);
+        RefreshGlobalVolumeText();
+        if (!suppressChanges && GlobalVolumeEnabledCheckBox.IsChecked == true) SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void RefreshProcessVolumeText()
+    private void RefreshGlobalVolumeText()
     {
-        ProcessVolumeValueTextBlock.Text = Model.VolumePercent.HasValue
-            ? $"{Model.VolumePercent.Value:0}%"
-            : Localization.Value("ProcessProfile_KeepCurrentVolume");
+        GlobalVolumeValueTextBlock.Text = Model.GlobalVolumePercent.HasValue
+            ? $"{Model.GlobalVolumePercent.Value:0}%"
+            : Localization.Value("ProcessProfile_KeepCurrentGlobalVolume");
     }
 
     private void ActiveSpatialAudioModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace DolbyAccessAutoSwitch_WinUI;
 
 /// <summary>
-/// Windows Core Audio volume control for an endpoint and its audio sessions.
+/// Windows Core Audio master-volume control for an endpoint.
 /// </summary>
 public static class AudioVolumeController
 {
@@ -12,7 +12,6 @@ public static class AudioVolumeController
     private const int MultimediaRole = 1;
     private const uint ClsctxAll = 23;
     private static readonly Guid EndpointVolumeIid = new("5CDF2C82-841E-4546-9722-0CF74078229A");
-    private static readonly Guid SessionManager2Iid = new("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
     private static readonly Guid MmDeviceEnumeratorClsid = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
     private static readonly Guid EmptyEventContext = Guid.Empty;
 
@@ -98,75 +97,6 @@ public static class AudioVolumeController
         finally
         {
             ReleaseCom(endpointVolume);
-            ReleaseCom(device);
-            if (interfacePointer != 0) Marshal.Release(interfacePointer);
-        }
-    }
-
-    public static string SetProcessVolume(int processId, string? endpointPath, float percent, bool apply)
-    {
-        percent = Math.Clamp(percent, 0f, 100f);
-        if (processId <= 0) return "Process volume skipped: invalid process id";
-        if (!apply) return $"C# dry-run: process {processId} volume -> {percent:0}%";
-
-        IMMDevice? device = null;
-        IAudioSessionManager2? manager = null;
-        IAudioSessionEnumerator? sessionEnumerator = null;
-        nint interfacePointer = 0;
-        int matchedSessions = 0;
-        try
-        {
-            device = OpenEndpoint(endpointPath, out string endpointError);
-            if (device == null) return $"Process volume failed for {processId}: {endpointError}";
-
-            Guid iid = SessionManager2Iid;
-            int hr = device.Activate(ref iid, ClsctxAll, 0, out interfacePointer);
-            if (hr < 0 || interfacePointer == 0) return $"Process volume failed for {processId}: {FormatHresult(hr)}";
-            manager = (IAudioSessionManager2)Marshal.GetTypedObjectForIUnknown(interfacePointer, typeof(IAudioSessionManager2));
-            hr = manager.GetSessionEnumerator(out sessionEnumerator);
-            if (hr < 0 || sessionEnumerator == null) return $"Process volume failed for {processId}: session enumeration failed ({FormatHresult(hr)})";
-            hr = sessionEnumerator.GetCount(out int sessionCount);
-            if (hr < 0) return $"Process volume failed for {processId}: session count failed ({FormatHresult(hr)})";
-
-            for (int index = 0; index < sessionCount; index++)
-            {
-                IAudioSessionControl? session = null;
-                ISimpleAudioVolume? simpleVolume = null;
-                try
-                {
-                    hr = sessionEnumerator.GetSession(index, out session);
-                    if (hr < 0 || session == null) continue;
-
-                    IAudioSessionControl2 session2 = (IAudioSessionControl2)session;
-                    hr = session2.GetProcessId(out uint sessionProcessId);
-                    if (hr < 0 || sessionProcessId != processId) continue;
-
-                    simpleVolume = (ISimpleAudioVolume)session;
-                    Guid eventContext = EmptyEventContext;
-                    hr = simpleVolume.SetMasterVolume(percent / 100f, ref eventContext);
-                    if (hr >= 0) matchedSessions++;
-                }
-                catch
-                {
-                }
-                finally
-                {
-                    ReleaseCom(session);
-                }
-            }
-
-            return matchedSessions > 0
-                ? $"C# process {processId} volume set -> {percent:0}% ({matchedSessions} session(s))"
-                : $"Process volume skipped for {processId}: no active audio session on this endpoint";
-        }
-        catch (Exception ex)
-        {
-            return $"Process volume failed for {processId}: {ex.Message}";
-        }
-        finally
-        {
-            ReleaseCom(sessionEnumerator);
-            ReleaseCom(manager);
             ReleaseCom(device);
             if (interfacePointer != 0) Marshal.Release(interfacePointer);
         }
@@ -290,65 +220,4 @@ public static class AudioVolumeController
         [PreserveSig] int GetVolumeRange(out float minDb, out float maxDb, out float incrementDb);
     }
 
-    [ComImport]
-    [Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionControl
-    {
-        [PreserveSig] int GetState(out int state);
-        [PreserveSig] int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string name);
-        [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string name, ref Guid eventContext);
-        [PreserveSig] int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string path);
-        [PreserveSig] int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string path, ref Guid eventContext);
-        [PreserveSig] int GetGroupingParam(out Guid groupingParam);
-        [PreserveSig] int SetGroupingParam(ref Guid groupingParam, ref Guid eventContext);
-        [PreserveSig] int RegisterAudioSessionNotification(nint notification);
-        [PreserveSig] int UnregisterAudioSessionNotification(nint notification);
-    }
-
-    [ComImport]
-    [Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionControl2 : IAudioSessionControl
-    {
-        [PreserveSig] int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string identifier);
-        [PreserveSig] int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string identifier);
-        [PreserveSig] int GetProcessId(out uint processId);
-        [PreserveSig] int IsSystemSoundsSession();
-        [PreserveSig] int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
-    }
-
-    [ComImport]
-    [Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface ISimpleAudioVolume
-    {
-        [PreserveSig] int SetMasterVolume(float level, ref Guid eventContext);
-        [PreserveSig] int GetMasterVolume(out float level);
-        [PreserveSig] int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid eventContext);
-        [PreserveSig] int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
-    }
-
-    [ComImport]
-    [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionEnumerator
-    {
-        [PreserveSig] int GetCount(out int count);
-        [PreserveSig] int GetSession(int index, [MarshalAs(UnmanagedType.Interface)] out IAudioSessionControl session);
-    }
-
-    [ComImport]
-    [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionManager2
-    {
-        [PreserveSig] int GetAudioSessionControl(nint audioSessionGuid, uint streamFlags, [MarshalAs(UnmanagedType.Interface)] out IAudioSessionControl sessionControl);
-        [PreserveSig] int GetSimpleAudioVolume(nint audioSessionGuid, uint streamFlags, [MarshalAs(UnmanagedType.Interface)] out ISimpleAudioVolume audioVolume);
-        [PreserveSig] int GetSessionEnumerator([MarshalAs(UnmanagedType.Interface)] out IAudioSessionEnumerator sessionEnumerator);
-        [PreserveSig] int RegisterSessionNotification(nint sessionNotification);
-        [PreserveSig] int UnregisterSessionNotification(nint sessionNotification);
-        [PreserveSig] int RegisterDuckNotification([MarshalAs(UnmanagedType.LPWStr)] string sessionId, nint duckNotification);
-        [PreserveSig] int UnregisterDuckNotification(nint duckNotification);
-    }
 }

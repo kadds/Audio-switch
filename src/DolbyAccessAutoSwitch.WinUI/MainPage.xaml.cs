@@ -28,13 +28,13 @@ public sealed partial class MainPage : Page, IDisposable
     private sealed record AudioRestoreCheckpoint(
         string? EndpointPath,
         string SpatialAudioModeId,
-        float? VolumePercent);
+        float? GlobalVolumePercent);
 
     private sealed record ProcessRuleSnapshot(
         bool ForegroundOnly,
         int? PriorityOverride,
-        float? VolumePercent,
         string? EndpointPath,
+        float? GlobalVolumePercent,
         string ActiveProfile,
         string ActiveSpatialAudioModeId);
 
@@ -49,10 +49,9 @@ public sealed partial class MainPage : Page, IDisposable
     private readonly ObservableCollection<string> logEntries = new();
     private readonly Dictionary<string, ProcessSwitchItem> processConfigs = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> temporarilyDisabledRuleIds = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<int, string> appliedProcessEndpointPaths = new();
     private readonly Dictionary<string, Task> endpointProbeTasks = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<int, ProcessSwitchItem> activeProcessRules = new();
     private readonly DispatcherQueueTimer monitorTimer;
+    private readonly DispatcherQueueTimer foregroundDebounceTimer;
     private readonly DispatcherQueueTimer audioRefreshTimer;
     private readonly DispatcherQueueTimer notificationHideTimer;
     private readonly MenuFlyout processContextFlyout;
@@ -61,13 +60,17 @@ public sealed partial class MainPage : Page, IDisposable
     private readonly MenuFlyoutItem toggleProcessRuleMenuItem;
     private SwitchConfig config;
     private AudioSystemChangeMonitor? audioSystemChangeMonitor;
+    private ForegroundWindowMonitor? foregroundWindowMonitor;
     private string pendingAudioChangeReason = "Audio system changed";
     private bool pageInitialized;
     private bool monitoring;
+    private bool foregroundCallbackActive;
+    private int? pendingForegroundProcessId;
     private bool suppressOutputDeviceSelection;
     private bool suppressGlobalVolumeSelection;
     private CancellationTokenSource? globalVolumeApplyCts;
     private bool suppressSpatialAudioSelection;
+    private bool suppressGlobalProfileSelection;
     private bool suppressLanguageSelection;
     private bool suppressNotificationSelection;
     private bool audioStateInitialized;
@@ -75,6 +78,8 @@ public sealed partial class MainPage : Page, IDisposable
     private string lastDefaultSpatialAudioModeId = string.Empty;
     private ProcessRuleSnapshot? copiedProcessRule;
     private readonly ConcurrentDictionary<string, byte> runningOperations = new(StringComparer.OrdinalIgnoreCase);
+    private int audioOperationInProgress;
+    private int audioEvaluationPending;
     private string activeGlobalSettingsSignature = string.Empty;
     private string lastMonitorDecisionSignature = string.Empty;
     private AudioRestoreCheckpoint? exitRestoreCheckpoint;
@@ -106,6 +111,9 @@ public sealed partial class MainPage : Page, IDisposable
         AllEndpointsListView.ItemsSource = endpoints;
         monitorTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         monitorTimer.Tick += MonitorTimer_Tick;
+        foregroundDebounceTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
+        foregroundDebounceTimer.Interval = TimeSpan.FromMilliseconds(180);
+        foregroundDebounceTimer.Tick += ForegroundDebounceTimer_Tick;
         audioRefreshTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         audioRefreshTimer.Interval = TimeSpan.FromMilliseconds(250);
         audioRefreshTimer.Tick += AudioRefreshTimer_Tick;
@@ -157,7 +165,10 @@ public sealed partial class MainPage : Page, IDisposable
         SpatialTitleTextBlock.Text = Localization.Text("MainPage_SpatialTitle");
         SpatialCurrentLabelTextBlock.Text = Localization.Text("MainPage_CurrentOutputLabel");
         SpatialAudioCurrentOutputText.Text = Localization.Text("MainPage_ReadingOutput");
+        SpatialDefaultProfileTitleTextBlock.Text = Localization.Text("MainPage_SpatialDefaultProfileTitle");
+        SpatialDefaultProfileHintTextBlock.Text = Localization.Text("MainPage_SpatialDefaultProfileHint");
         SpatialOptionsTextBlock.Text = Localization.Text("MainPage_SpatialOptions");
+        RefreshGlobalSpatialProfileChoices();
         GeneralTitleTextBlock.Text = Localization.Text("MainPage_GeneralTitle");
         LanguageLabelTextBlock.Text = Localization.Text("MainPage_LanguageLabel");
         ((ComboBoxItem)LanguageComboBox.Items[0]).Content = Localization.Content("Language_System");
@@ -266,6 +277,7 @@ public sealed partial class MainPage : Page, IDisposable
         if (ProfileEditorHost.Content is ProcessProfileView view) view.RefreshLocalization();
         SpatialAudioOptionsListView.ItemsSource = null;
         SpatialAudioOptionsListView.ItemsSource = SpatialAudioModeCatalog.Options;
+        RefreshGlobalSpatialProfileChoices();
         if (pageInitialized) _ = RefreshAudioStateAsync();
     }
 
@@ -346,6 +358,18 @@ public sealed partial class MainPage : Page, IDisposable
         catch (Exception ex)
         {
             Log("Audio listener initialization failed: " + ex.Message);
+        }
+
+        try
+        {
+            foregroundWindowMonitor = new ForegroundWindowMonitor(
+                DispatcherQueue,
+                ForegroundWindowChanged,
+                Log);
+        }
+        catch (Exception ex)
+        {
+            Log("Foreground callback initialization failed: " + ex.Message);
         }
 
         StartWithWindowsCheckBox.IsChecked = config.StartWithWindows;
@@ -522,6 +546,7 @@ public sealed partial class MainPage : Page, IDisposable
         // format of an already-running stream, which made Off look like it failed.
         SpatialAudioOptionsListView.SelectedItem = audio.Options.FirstOrDefault(option => string.Equals(option.Id, audio.DefaultSpatialAudioModeId, StringComparison.OrdinalIgnoreCase));
         suppressSpatialAudioSelection = false;
+        RefreshGlobalSpatialProfileChoices();
 
         if (outputChanged)
         {
@@ -714,10 +739,58 @@ public sealed partial class MainPage : Page, IDisposable
     {
         if (string.Equals(modeId, "keep", StringComparison.OrdinalIgnoreCase)) return;
 
+        bool changed = !string.Equals(config.GlobalSpatialAudioModeId, modeId, StringComparison.OrdinalIgnoreCase);
         config.GlobalSpatialAudioModeId = modeId;
         IAudioProfileProvider? provider = AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId);
-        config.GlobalActiveProfile = provider?.DefaultActiveProfile ?? string.Empty;
+        if (provider == null)
+        {
+            changed |= !string.IsNullOrWhiteSpace(config.GlobalActiveProfile);
+            config.GlobalActiveProfile = string.Empty;
+        }
+        else if (!provider.SupportsProfile(config.GlobalActiveProfile))
+        {
+            config.GlobalActiveProfile = provider.DefaultActiveProfile;
+            changed = true;
+        }
         SaveConfig();
+        RefreshGlobalSpatialProfileChoices();
+        if (changed)
+        {
+            activeGlobalSettingsSignature = string.Empty;
+            if (monitoring && audioStateInitialized) MonitorTimer_Tick(monitorTimer, new object());
+        }
+    }
+
+    private void RefreshGlobalSpatialProfileChoices()
+    {
+        string modeId = !string.IsNullOrWhiteSpace(config.GlobalSpatialAudioModeId)
+            ? config.GlobalSpatialAudioModeId
+            : (!string.IsNullOrWhiteSpace(lastDefaultSpatialAudioModeId) ? lastDefaultSpatialAudioModeId : "off");
+        IAudioProfileProvider? provider = AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId);
+
+        suppressGlobalProfileSelection = true;
+        SpatialDefaultProfileComboBox.ItemsSource = provider?.SupportedProfiles ?? Array.Empty<string>();
+        SpatialDefaultProfileComboBox.IsEnabled = provider != null && provider.SupportedProfiles.Count > 0;
+        SpatialDefaultProfileComboBox.SelectedItem = provider != null && provider.SupportsProfile(config.GlobalActiveProfile)
+            ? config.GlobalActiveProfile
+            : provider?.DefaultActiveProfile;
+        suppressGlobalProfileSelection = false;
+    }
+
+    private void SpatialDefaultProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressGlobalProfileSelection || SpatialDefaultProfileComboBox.SelectedItem is not string profile) return;
+
+        string modeId = !string.IsNullOrWhiteSpace(config.GlobalSpatialAudioModeId)
+            ? config.GlobalSpatialAudioModeId
+            : lastDefaultSpatialAudioModeId;
+        IAudioProfileProvider? provider = AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId);
+        if (provider == null || !provider.SupportsProfile(profile) || string.Equals(config.GlobalActiveProfile, profile, StringComparison.OrdinalIgnoreCase)) return;
+
+        config.GlobalActiveProfile = profile;
+        SaveConfig();
+        activeGlobalSettingsSignature = string.Empty;
+        if (monitoring && audioStateInitialized) MonitorTimer_Tick(monitorTimer, new object());
     }
 
     private void RefreshProfileEditorEndpoints()
@@ -792,8 +865,8 @@ public sealed partial class MainPage : Page, IDisposable
         copiedProcessRule = new ProcessRuleSnapshot(
             model.ForegroundOnly,
             model.PriorityOverride,
-            model.VolumePercent,
             ReadEndpointPath(model.EndpointFile),
+            model.GlobalVolumePercent,
             model.ActiveProfile,
             model.ActiveSpatialAudioModeId);
         UpdateProcessContextMenuState();
@@ -808,7 +881,7 @@ public sealed partial class MainPage : Page, IDisposable
 
         target.ForegroundOnly = copiedProcessRule.ForegroundOnly;
         target.PriorityOverride = copiedProcessRule.PriorityOverride;
-        target.VolumePercent = VolumeSafety.Clamp(copiedProcessRule.VolumePercent, config.VolumeProtectionEnabled);
+        target.GlobalVolumePercent = VolumeSafety.Clamp(copiedProcessRule.GlobalVolumePercent, config.VolumeProtectionEnabled);
         target.ActiveProfile = copiedProcessRule.ActiveProfile;
         target.ActiveSpatialAudioModeId = copiedProcessRule.ActiveSpatialAudioModeId;
         if (string.IsNullOrWhiteSpace(copiedProcessRule.EndpointPath))
@@ -834,7 +907,6 @@ public sealed partial class MainPage : Page, IDisposable
 
         if (!temporarilyDisabledRuleIds.Add(model.RuleId)) temporarilyDisabledRuleIds.Remove(model.RuleId);
         choice.SetRuleDisabled(temporarilyDisabledRuleIds.Contains(model.RuleId));
-        activeProcessRules.Clear();
         activeGlobalSettingsSignature = string.Empty;
         UpdateProcessContextMenuState();
         Log(temporarilyDisabledRuleIds.Contains(model.RuleId)
@@ -986,6 +1058,7 @@ public sealed partial class MainPage : Page, IDisposable
         UpdateProcessEmptyState();
         ProcessListView.SelectedIndex = processChoices.Count - 1;
         SaveConfig();
+        UpdateMonitoringSchedule();
     }
 
     private void RemoveProcess_Click(object sender, RoutedEventArgs e)
@@ -1006,6 +1079,7 @@ public sealed partial class MainPage : Page, IDisposable
         };
         if (processChoices.Count > 0) ProcessListView.SelectedIndex = 0;
         SaveConfig();
+        UpdateMonitoringSchedule();
     }
 
     private void UpdateProcessEmptyState()
@@ -1163,14 +1237,21 @@ public sealed partial class MainPage : Page, IDisposable
             ProbeEndpointForView(view, endpoint);
         }
         SaveConfig();
-        RouteOutputForRunningProcesses(view.Model);
+        UpdateMonitoringSchedule();
+        // Rule edits are persisted here. The monitor applies the rule only
+        // after it wins the normal match-priority selection; editing an
+        // inactive rule must not change the system default output immediately.
     }
 
     private void ProfileView_TestActiveRequested(object? sender, EventArgs e)
     {
         if (sender is ProcessProfileView view)
         {
-            RunProfileAsync(view.Model, view.Model.ActiveProfile, view.Model.ActiveSpatialAudioModeId, GetMatchingProcessIds(view.Model));
+            RunProfileAsync(
+                view.Model,
+                view.Model.ActiveProfile,
+                view.Model.ActiveSpatialAudioModeId,
+                $"{view.Model.RuleId}:test");
         }
     }
 
@@ -1209,10 +1290,12 @@ public sealed partial class MainPage : Page, IDisposable
     {
         if (monitoring) return;
         monitoring = true;
-        activeProcessRules.Clear();
+        pendingForegroundProcessId = null;
+        foregroundDebounceTimer.Stop();
+        Interlocked.Exchange(ref audioEvaluationPending, 0);
         activeGlobalSettingsSignature = string.Empty;
-        monitorTimer.Interval = TimeSpan.FromSeconds(Math.Max(1, config.IntervalSeconds));
-        monitorTimer.Start();
+        foregroundCallbackActive = foregroundWindowMonitor?.Start() == true;
+        UpdateMonitoringSchedule();
         MonitorButtonText.Text = Localization.Text("MainPage_StopMonitoring");
         MonitorButtonIcon.Symbol = Symbol.Stop;
         StatusText.Text = Localization.Value("Status_Monitoring");
@@ -1224,7 +1307,11 @@ public sealed partial class MainPage : Page, IDisposable
     {
         monitoring = false;
         monitorTimer.Stop();
-        activeProcessRules.Clear();
+        foregroundDebounceTimer.Stop();
+        pendingForegroundProcessId = null;
+        foregroundWindowMonitor?.Stop();
+        foregroundCallbackActive = false;
+        Interlocked.Exchange(ref audioEvaluationPending, 0);
         activeGlobalSettingsSignature = string.Empty;
         MonitorButtonText.Text = Localization.Text("MainPage_StartMonitoring");
         MonitorButtonIcon.Symbol = Symbol.Play;
@@ -1232,11 +1319,76 @@ public sealed partial class MainPage : Page, IDisposable
         Log("Monitoring stopped.");
     }
 
+    private void UpdateMonitoringSchedule()
+    {
+        if (!monitoring)
+        {
+            monitorTimer.Stop();
+            return;
+        }
+
+        bool hasBackgroundRules = config.Processes.Any(item => !item.ForegroundOnly);
+        if (!foregroundCallbackActive || hasBackgroundRules)
+        {
+            // Foreground changes are event-driven. Keep only a low-frequency
+            // reconciliation pass for background rules; use the configured
+            // interval as the full fallback when hook registration failed.
+            int seconds = foregroundCallbackActive
+                ? Math.Max(10, config.IntervalSeconds)
+                : Math.Max(1, config.IntervalSeconds);
+            monitorTimer.Interval = TimeSpan.FromSeconds(seconds);
+            monitorTimer.Start();
+        }
+        else
+        {
+            monitorTimer.Stop();
+        }
+    }
+
+    private void ForegroundWindowChanged(int? processId)
+    {
+        if (!monitoring) return;
+
+        pendingForegroundProcessId = processId;
+        foregroundDebounceTimer.Stop();
+        foregroundDebounceTimer.Start();
+        LogMonitorDecision(
+            $"foreground-callback-queued|{processId?.ToString() ?? "<none>"}",
+            $"Foreground callback queued: pid={processId?.ToString() ?? "<none>"}; waiting for a stable window.");
+    }
+
+    private void ForegroundDebounceTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        foregroundDebounceTimer.Stop();
+        if (!monitoring) return;
+
+        int? processId = pendingForegroundProcessId;
+        pendingForegroundProcessId = null;
+        LogMonitorDecision(
+            $"foreground-stable|{processId?.ToString() ?? "<none>"}",
+            $"Foreground callback stabilized: pid={processId?.ToString() ?? "<none>"}.");
+        MonitorTimer_Tick(monitorTimer, new object(), processId);
+    }
+
     private void MonitorTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        MonitorTimer_Tick(sender, args, null);
+    }
+
+    private void MonitorTimer_Tick(DispatcherQueueTimer sender, object args, int? foregroundProcessIdOverride)
     {
         if (!audioStateInitialized) return;
 
-        int? foregroundProcessId = GetForegroundProcessId();
+        if (Volatile.Read(ref audioOperationInProgress) != 0)
+        {
+            Interlocked.Exchange(ref audioEvaluationPending, 1);
+            LogMonitorDecision(
+                "monitor-deferred-audio-operation",
+                "Monitor evaluation deferred while an audio operation is in progress.");
+            return;
+        }
+
+        int? foregroundProcessId = foregroundProcessIdOverride ?? GetForegroundProcessId();
 
         // Editing a rule brings Audio Switch itself to the foreground. Treat that
         // as a neutral UI state so a foreground-only game rule is not torn down
@@ -1249,11 +1401,6 @@ public sealed partial class MainPage : Page, IDisposable
             return;
         }
 
-        foreach (int processId in appliedProcessEndpointPaths.Keys.Where(processId => !IsProcessRunning(processId)).ToList())
-        {
-            appliedProcessEndpointPaths.Remove(processId);
-        }
-
         List<ProcessSwitchItem> rules = config.Processes.ToList();
         var candidates = new Dictionary<int, List<(ProcessSwitchItem Rule, int Order)>>();
         var ruleMatches = new List<string>();
@@ -1261,7 +1408,7 @@ public sealed partial class MainPage : Page, IDisposable
         foreach (ProcessSwitchItem item in rules)
         {
             if (temporarilyDisabledRuleIds.Contains(item.RuleId)) continue;
-            List<int> processIds = GetMatchingProcessIds(item);
+            List<int> processIds = GetMatchingProcessIds(item, foregroundProcessId);
             ruleMatches.Add($"{item.Name}={FormatProcessIds(processIds)}");
             foreach (int processId in processIds)
             {
@@ -1296,27 +1443,6 @@ public sealed partial class MainPage : Page, IDisposable
             $"global={config.GlobalSpatialAudioModeId}/{config.GlobalActiveProfile}";
         LogMonitorDecision(monitorDecision, $"Monitor scan: {monitorDecision}");
 
-        HashSet<int> processIdsToUpdate = activeProcessRules.Keys.Concat(effectiveRules.Keys).ToHashSet();
-        foreach (int processId in processIdsToUpdate)
-        {
-            activeProcessRules.TryGetValue(processId, out ProcessSwitchItem? previousRule);
-            effectiveRules.TryGetValue(processId, out ProcessSwitchItem? nextRule);
-            if (previousRule != null && nextRule != null && string.Equals(previousRule.RuleId, nextRule.RuleId, StringComparison.OrdinalIgnoreCase)) continue;
-
-            if (nextRule != null)
-            {
-                RunProfileAsync(nextRule, string.Empty, "keep", new[] { processId }, $"{nextRule.RuleId}:output:{processId}");
-            }
-            else if (previousRule != null)
-            {
-                IReadOnlyList<int> restoreTarget = IsProcessRunning(processId) ? new[] { processId } : Array.Empty<int>();
-                RunGlobalProfileAsync(string.Empty, "keep", restoreTarget, $"global-output:{processId}");
-            }
-        }
-
-        activeProcessRules.Clear();
-        foreach ((int processId, ProcessSwitchItem rule) in effectiveRules) activeProcessRules[processId] = rule;
-
         ProcessSwitchItem? activeRule = effectiveRules
             .Select(pair => (Rule: pair.Value, ProcessId: pair.Key))
             .OrderByDescending(match => RulePriority(match.Rule))
@@ -1326,11 +1452,13 @@ public sealed partial class MainPage : Page, IDisposable
 
         if (activeRule != null)
         {
-            string ruleSignature = $"rule|{activeRule.RuleId}|{activeRule.ActiveSpatialAudioModeId}|{activeRule.ActiveProfile}|{ReadEndpointPath(activeRule.EndpointFile)}";
+            string ruleSignature = $"rule|{activeRule.RuleId}|{activeRule.ActiveSpatialAudioModeId}|{activeRule.ActiveProfile}|{ReadEndpointPath(activeRule.EndpointFile)}|{activeRule.GlobalVolumePercent?.ToString() ?? "<default>"}|{config.GlobalVolumePercent?.ToString() ?? "<none>"}";
             if (!string.Equals(activeGlobalSettingsSignature, ruleSignature, StringComparison.Ordinal))
             {
-                activeGlobalSettingsSignature = ruleSignature;
-                RunProfileAsync(activeRule, activeRule.ActiveProfile, activeRule.ActiveSpatialAudioModeId, Array.Empty<int>(), $"{activeRule.RuleId}:spatial");
+                if (RunProfileAsync(activeRule, activeRule.ActiveProfile, activeRule.ActiveSpatialAudioModeId, $"{activeRule.RuleId}:spatial"))
+                {
+                    activeGlobalSettingsSignature = ruleSignature;
+                }
             }
             return;
         }
@@ -1338,11 +1466,13 @@ public sealed partial class MainPage : Page, IDisposable
         string globalMode = string.IsNullOrWhiteSpace(config.GlobalSpatialAudioModeId) ? "off" : config.GlobalSpatialAudioModeId;
         string globalProfile = config.GlobalActiveProfile ?? string.Empty;
         string globalEndpointPath = GetGlobalEndpointPath();
-        string globalSignature = $"global|{globalMode}|{globalProfile}|{globalEndpointPath}";
+        string globalSignature = $"global|{globalMode}|{globalProfile}|{globalEndpointPath}|{config.GlobalVolumePercent?.ToString() ?? "<none>"}";
         if (!string.Equals(activeGlobalSettingsSignature, globalSignature, StringComparison.Ordinal))
         {
-            activeGlobalSettingsSignature = globalSignature;
-            RunGlobalProfileAsync(globalProfile, globalMode, Array.Empty<int>(), "global-spatial");
+            if (RunGlobalProfileAsync(globalProfile, globalMode, "global-spatial"))
+            {
+                activeGlobalSettingsSignature = globalSignature;
+            }
         }
     }
 
@@ -1368,7 +1498,7 @@ public sealed partial class MainPage : Page, IDisposable
         }
     }
 
-    private static List<int> GetMatchingProcessIds(ProcessSwitchItem item)
+    private static List<int> GetMatchingProcessIds(ProcessSwitchItem item, int? foregroundProcessId)
     {
         var result = new List<int>();
         try
@@ -1379,7 +1509,7 @@ public sealed partial class MainPage : Page, IDisposable
                 {
                     using (process) result.Add(process.Id);
                 }
-                return ApplyForegroundFilter(item, result);
+                return ApplyForegroundFilter(item, result, foregroundProcessId);
             }
 
             if (string.IsNullOrWhiteSpace(item.ExecutablePath)) return result;
@@ -1399,14 +1529,13 @@ public sealed partial class MainPage : Page, IDisposable
         catch
         {
         }
-        return ApplyForegroundFilter(item, result);
+        return ApplyForegroundFilter(item, result, foregroundProcessId);
     }
 
-    private static List<int> ApplyForegroundFilter(ProcessSwitchItem item, List<int> processIds)
+    private static List<int> ApplyForegroundFilter(ProcessSwitchItem item, List<int> processIds, int? foregroundProcessId)
     {
         if (!item.ForegroundOnly || processIds.Count == 0) return processIds;
 
-        int? foregroundProcessId = GetForegroundProcessId();
         return foregroundProcessId.HasValue && processIds.Contains(foregroundProcessId.Value)
             ? new List<int> { foregroundProcessId.Value }
             : new List<int>();
@@ -1419,49 +1548,49 @@ public sealed partial class MainPage : Page, IDisposable
         return processId <= int.MaxValue ? (int)processId : null;
     }
 
-    private void RunProfileAsync(ProcessSwitchItem item, string profile, string spatialAudioModeId, IReadOnlyList<int>? processIds = null, string? operationKeyOverride = null)
+    private bool RunProfileAsync(
+        ProcessSwitchItem item,
+        string profile,
+        string spatialAudioModeId,
+        string? operationKeyOverride = null)
     {
-        IReadOnlyList<int> targetProcessIds = processIds ?? Array.Empty<int>();
-        RunAudioOperationAsync(
+        return RunAudioOperationAsync(
             item.Name,
             ReadEndpointPath(item.EndpointFile),
             profile,
             spatialAudioModeId,
             apply: true,
-            VolumeSafety.Clamp(item.VolumePercent, config.VolumeProtectionEnabled),
-            targetProcessIds,
-            operationKeyOverride ?? item.RuleId);
+            endpointVolumePercent: VolumeSafety.Clamp(
+                item.GlobalVolumePercent ?? config.GlobalVolumePercent,
+                config.VolumeProtectionEnabled),
+            operationKey: operationKeyOverride ?? item.RuleId);
     }
 
-    private void RunGlobalProfileAsync(string profile, string spatialAudioModeId, IReadOnlyList<int> processIds, string operationKey)
+    private bool RunGlobalProfileAsync(string profile, string spatialAudioModeId, string operationKey)
     {
-        RunAudioOperationAsync(
+        return RunAudioOperationAsync(
             Localization.Value("MainPage_GlobalDefaults"),
             GetGlobalEndpointPath(),
             profile,
             spatialAudioModeId,
             apply: true,
-            processVolumePercent: processIds.Count > 0
-                ? VolumeSafety.Clamp(config.GlobalVolumePercent, config.VolumeProtectionEnabled)
-                : null,
-            targetProcessIds: processIds,
+            endpointVolumePercent: VolumeSafety.Clamp(config.GlobalVolumePercent, config.VolumeProtectionEnabled),
             operationKey: operationKey);
     }
 
-    private void RunAudioOperationAsync(
+    private bool RunAudioOperationAsync(
         string operationName,
         string? configuredEndpointPath,
         string profile,
         string spatialAudioModeId,
         bool apply,
-        float? processVolumePercent,
-        IReadOnlyList<int> targetProcessIds,
+        float? endpointVolumePercent,
         string operationKey)
     {
         if (!runningOperations.TryAdd(operationKey, 0))
         {
             Log($"[{operationName}] another operation is already running.");
-            return;
+            return false;
         }
 
         SpatialAudioOption spatialMode = SpatialAudioModeCatalog.FindById(spatialAudioModeId);
@@ -1470,9 +1599,20 @@ public sealed partial class MainPage : Page, IDisposable
         {
             runningOperations.TryRemove(operationKey, out _);
             Log($"[{operationName}] the selected spatial format does not support preset '{profile}'.");
-            return;
+            return false;
         }
 
+        if (Interlocked.CompareExchange(ref audioOperationInProgress, 1, 0) != 0)
+        {
+            runningOperations.TryRemove(operationKey, out _);
+            Interlocked.Exchange(ref audioEvaluationPending, 1);
+            Log($"[{operationName}] audio operation deferred because another switch is still running.");
+            return false;
+        }
+
+        // A process rule selects the system default output device. It does not
+        // create an independent per-process audio route.
+        bool shouldSetGlobalOutput = !string.IsNullOrWhiteSpace(configuredEndpointPath);
         configuredEndpointPath ??= string.Empty;
         List<AudioEndpointChoice> endpointSnapshot = endpoints.ToList();
         _ = Task.Run(async () =>
@@ -1491,19 +1631,28 @@ public sealed partial class MainPage : Page, IDisposable
                     return;
                 }
 
-                if (!string.IsNullOrWhiteSpace(endpointPath))
+                if (shouldSetGlobalOutput && !string.IsNullOrWhiteSpace(endpointPath))
                 {
-                    foreach (int processId in targetProcessIds)
+                    if (string.Equals(lastDefaultEndpointPath, endpointPath, StringComparison.OrdinalIgnoreCase))
                     {
-                        Log(SetProcessOutputIfChanged(processId, endpointPath, apply));
+                        Log($"[{operationName}] default output unchanged; switch API skipped.");
+                    }
+                    else
+                    {
+                        string outputResult = await Task.Run(() => ProcessAudioRouter.SetSystemDefaultOutputDevice(endpointPath, apply));
+                        Log($"[{operationName}] {outputResult}");
+                        if (outputResult.StartsWith("C# default output switched", StringComparison.OrdinalIgnoreCase))
+                        {
+                            lastDefaultEndpointPath = endpointPath;
+                        }
                     }
                 }
-                if (processVolumePercent.HasValue)
+                if (endpointVolumePercent.HasValue)
                 {
-                    foreach (int processId in targetProcessIds)
-                    {
-                        Log(AudioVolumeController.SetProcessVolume(processId, endpointPath, processVolumePercent.Value, apply));
-                    }
+                    Log($"[{operationName}] global volume target=default; {AudioVolumeController.SetEndpointVolume(
+                        null,
+                        endpointVolumePercent.Value,
+                        apply)}");
                 }
                 if (spatialMode.Id != "keep")
                 {
@@ -1524,72 +1673,21 @@ public sealed partial class MainPage : Page, IDisposable
             finally
             {
                 runningOperations.TryRemove(operationKey, out _);
-            }
-        });
-    }
-
-    private void RouteOutputForRunningProcesses(ProcessSwitchItem item)
-    {
-        List<int> processIds = GetMatchingProcessIds(item);
-        if (processIds.Count == 0) return;
-        string endpointPath = ReadEndpointPath(item.EndpointFile) ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(endpointPath) && !item.VolumePercent.HasValue) return;
-
-        string operationKey = $"{item.RuleId}:manual";
-        if (!runningOperations.TryAdd(operationKey, 0))
-        {
-            Log($"[{item.Name}] another operation for this process is already running.");
-            return;
-        }
-
-        const bool apply = true;
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                foreach (int processId in processIds)
+                Interlocked.Exchange(ref audioOperationInProgress, 0);
+                if (Interlocked.Exchange(ref audioEvaluationPending, 0) != 0)
                 {
-                    if (!string.IsNullOrWhiteSpace(endpointPath))
+                    DispatcherQueue.TryEnqueue(() =>
                     {
-                        Log(SetProcessOutputIfChanged(processId, endpointPath, apply));
-                    }
-                    if (item.VolumePercent.HasValue)
-                    {
-                        Log(AudioVolumeController.SetProcessVolume(
-                            processId,
-                            endpointPath,
-                            VolumeSafety.Clamp(item.VolumePercent.Value, config.VolumeProtectionEnabled),
-                            apply));
-                    }
+                        if (!monitoring) return;
+                        foregroundDebounceTimer.Stop();
+                        pendingForegroundProcessId = null;
+                        Log("Audio operation completed; re-evaluating the current foreground rule.");
+                        MonitorTimer_Tick(monitorTimer, new object());
+                    });
                 }
             }
-            catch (Exception ex)
-            {
-                Log($"[{item.Name}] output or volume operation failed: {ex.Message}");
-            }
-            finally
-            {
-                runningOperations.TryRemove(operationKey, out _);
-            }
         });
-    }
-
-    private string SetProcessOutputIfChanged(int processId, string endpointPath, bool apply)
-    {
-        if (appliedProcessEndpointPaths.TryGetValue(processId, out string? previousEndpointPath) &&
-            string.Equals(previousEndpointPath, endpointPath, StringComparison.OrdinalIgnoreCase))
-        {
-            return $"C# process {processId} output unchanged -> switch API skipped";
-        }
-
-        string result = ProcessAudioRouter.SetOutputDevice(processId, endpointPath, apply);
-        if (result.StartsWith("C# process ", StringComparison.OrdinalIgnoreCase) &&
-            result.Contains(" output routed", StringComparison.OrdinalIgnoreCase))
-        {
-            appliedProcessEndpointPaths[processId] = endpointPath;
-        }
-
-        return result;
+        return true;
     }
 
     private async void GeneralOption_Click(object sender, RoutedEventArgs e)
@@ -1625,11 +1723,6 @@ public sealed partial class MainPage : Page, IDisposable
         }
         suppressGlobalVolumeSelection = false;
 
-        if (ProfileEditorHost.Content is ProcessProfileView view && view.SetVolumeProtection(config.VolumeProtectionEnabled))
-        {
-            SaveConfig();
-        }
-
         if (globalVolumeClamped)
         {
             config.GlobalVolumePercent = safeGlobalVolume;
@@ -1654,8 +1747,8 @@ public sealed partial class MainPage : Page, IDisposable
         }
 
         config.IntervalSeconds = intervalSeconds;
-        if (monitoring) monitorTimer.Interval = TimeSpan.FromSeconds(intervalSeconds);
         SaveConfig();
+        UpdateMonitoringSchedule();
     }
 
     private ProcessChoice? FindProcessChoice(string name, string? requiredPath = null)
@@ -1874,7 +1967,7 @@ public sealed partial class MainPage : Page, IDisposable
                 Log($"Exit restore spatial audio -> {spatialResult}");
             }
 
-            if (checkpoint.VolumePercent is float volume)
+            if (checkpoint.GlobalVolumePercent is float volume)
             {
                 float safeVolume = VolumeSafety.Clamp(volume, config.VolumeProtectionEnabled);
                 Log($"Exit restore volume -> {AudioVolumeController.SetEndpointVolume(null, safeVolume, apply: true)}");
@@ -1892,9 +1985,13 @@ public sealed partial class MainPage : Page, IDisposable
         audioRefreshTimer.Stop();
         notificationHideTimer.Stop();
         monitorTimer.Stop();
+        foregroundDebounceTimer.Stop();
+        pendingForegroundProcessId = null;
         globalVolumeApplyCts?.Cancel();
         globalVolumeApplyCts?.Dispose();
         globalVolumeApplyCts = null;
+        foregroundWindowMonitor?.Dispose();
+        foregroundWindowMonitor = null;
         audioSystemChangeMonitor?.Dispose();
         audioSystemChangeMonitor = null;
         RestoreExitRestoreCheckpoint();

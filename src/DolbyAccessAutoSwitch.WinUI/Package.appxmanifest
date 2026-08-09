@@ -48,6 +48,7 @@
 
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="audioDeviceConfiguration" />
     <systemai:Capability Name="systemAIModels"/>
   </Capabilities>
 </Package>

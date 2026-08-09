@@ -56,12 +56,12 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="ProcessVolumeLabelTextBlock" Text="Process volume" VerticalAlignment="Center" />
-                        <TextBlock x:Name="ProcessVolumeValueTextBlock" Grid.Column="1" Text="Keep current" VerticalAlignment="Center" Opacity="0.72" />
+                        <TextBlock x:Name="GlobalVolumeLabelTextBlock" Text="Global volume when matched" VerticalAlignment="Center" />
+                        <TextBlock x:Name="GlobalVolumeValueTextBlock" Grid.Column="1" Text="Keep current" VerticalAlignment="Center" Opacity="0.72" />
                     </Grid>
-                    <CheckBox x:Name="ProcessVolumeEnabledCheckBox" Content="Set volume for this process" Click="ProcessVolumeEnabledCheckBox_Click" />
-                    <Slider x:Name="ProcessVolumeSlider" Minimum="0" Maximum="100" StepFrequency="1" Value="100" IsEnabled="False" ValueChanged="ProcessVolumeSlider_ValueChanged" />
-                    <TextBlock x:Name="ProcessVolumeHintTextBlock" Text="Disabled means keep the current process volume." Opacity="0.62" FontSize="12" TextWrapping="Wrap" />
+                    <CheckBox x:Name="GlobalVolumeEnabledCheckBox" Content="Set global volume when this rule matches" Click="GlobalVolumeEnabledCheckBox_Click" />
+                    <Slider x:Name="GlobalVolumeSlider" Minimum="0" Maximum="100" StepFrequency="1" Value="100" IsEnabled="False" ValueChanged="GlobalVolumeSlider_ValueChanged" />
+                    <TextBlock x:Name="GlobalVolumeHintTextBlock" Text="Disabled means keep the current global volume." Opacity="0.62" FontSize="12" TextWrapping="Wrap" />
                     <TextBlock x:Name="CurrentSpatialTextBlock" Text="Current spatial audio" Opacity="0.68" Margin="0,8,0,0" />
                     <TextBlock x:Name="CurrentMatchTextBlock" Text="No output device selected." TextWrapping="Wrap" />
                 </StackPanel>

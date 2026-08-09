@@ -35,6 +35,8 @@
   <data name="MainPage_OutputTitle.Text"><value>&#x53EF;&#x7528;&#x8F93;&#x51FA;&#x8BBE;&#x5907;</value></data>
   <data name="MainPage_OutputStatus.Text"><value>&#x5F53;&#x524D;&#x9ED8;&#x8BA4;&#x8BBE;&#x5907;&#x4F1A;&#x9AD8;&#x4EAE;&#x663E;&#x793A;&#x3002;&#x70B9;&#x51FB;&#x9879;&#x76EE;&#x5373;&#x53EF;&#x5207;&#x6362;&#x8F93;&#x51FA;&#x8BBE;&#x5907;&#x3002;</value></data>
   <data name="MainPage_SpatialTitle.Text"><value>&#x7A7A;&#x95F4;&#x97F3;&#x9891;</value></data>
+  <data name="MainPage_SpatialDefaultProfileTitle.Text"><value>&#x9ED8;&#x8BA4;&#x9884;&#x8BBE;</value></data>
+  <data name="MainPage_SpatialDefaultProfileHint.Text"><value>&#x6CA1;&#x6709;&#x8FDB;&#x7A0B;&#x89C4;&#x5219;&#x5339;&#x914D;&#x524D;&#x53F0;&#x7A97;&#x53E3;&#x65F6;&#x4F7F;&#x7528;&#x3002;</value></data>
   <data name="MainPage_SpatialOptions.Text"><value>Windows &#x7A7A;&#x95F4;&#x97F3;&#x9891;&#x9009;&#x9879; - &#x70B9;&#x51FB;&#x5207;&#x6362;</value></data>
   <data name="MainPage_GeneralTitle.Text"><value>&#x542F;&#x52A8;&#x4E0E;&#x884C;&#x4E3A;</value></data>
   <data name="MainPage_LanguageLabel.Text"><value>&#x754C;&#x9762;&#x8BED;&#x8A00;</value></data>
@@ -43,7 +45,7 @@
   <data name="MainPage_StartSilent.Content"><value>&#x542F;&#x52A8;&#x540E;&#x9690;&#x85CF;&#x5230;&#x6258;&#x76D8;</value></data>
   <data name="MainPage_StartMonitor.Content"><value>&#x81EA;&#x52A8;&#x5F00;&#x59CB;&#x76D1;&#x63A7;</value></data>
   <data name="MainPage_VolumeProtection.Content"><value>&#x542F;&#x7528; 80% &#x97F3;&#x91CF;&#x4FDD;&#x62A4;</value></data>
-  <data name="MainPage_VolumeProtectionHint.Text"><value>&#x5F00;&#x542F;&#x540E;&#xFF0C;&#x5168;&#x5C40;&#x97F3;&#x91CF;&#x548C;&#x8FDB;&#x7A0B;&#x97F3;&#x91CF;&#x90FD;&#x4E0D;&#x4F1A;&#x5E94;&#x7528;&#x8D85;&#x8FC7; 80% &#x7684;&#x503C;&#x3002;</value></data>
+  <data name="MainPage_VolumeProtectionHint.Text"><value>&#x5F00;&#x542F;&#x540E;&#xFF0C;&#x5168;&#x5C40;&#x97F3;&#x91CF;&#x4E0D;&#x4F1A;&#x5E94;&#x7528;&#x8D85;&#x8FC7; 80% &#x7684;&#x503C;&#x3002;</value></data>
   <data name="MainPage_IntervalLabel.Text"><value>&#x8FDB;&#x7A0B;&#x626B;&#x63CF;&#x95F4;&#x9694;&#xFF08;&#x79D2;&#xFF09;</value></data>
   <data name="MainPage_IntervalHint.Text"><value>&#x6570;&#x503C;&#x8D8A;&#x5C0F;&#xFF0C;&#x8D8A;&#x5FEB;&#x68C0;&#x6D4B;&#x5230;&#x8FDB;&#x7A0B;&#x542F;&#x52A8;&#xFF0C;&#x4F46;&#x626B;&#x63CF;&#x6B21;&#x6570;&#x4E5F;&#x4F1A;&#x589E;&#x52A0;&#x3002;</value></data>
   <data name="MainPage_TrayHint.Text"><value>&#x6E38;&#x620F;&#x65F6;&#x7A0B;&#x5E8F;&#x4F1A;&#x5B89;&#x9759;&#x5730;&#x9A7B;&#x7559;&#x5728;&#x6258;&#x76D8;&#x4E2D;&#x3002;&#x53EF;&#x4EE5;&#x4ECE;&#x6258;&#x76D8;&#x83DC;&#x5355;&#x6253;&#x5F00;&#x8BBE;&#x7F6E;&#x3002;</value></data>
@@ -96,10 +98,10 @@
   <data name="ProcessProfile_OutputDevice.Text"><value>&#x8F93;&#x51FA;&#x8BBE;&#x5907;</value></data>
   <data name="ProcessProfile_KeepCurrentOutput.Value"><value>&#x4FDD;&#x6301;&#x5F53;&#x524D;&#x8F93;&#x51FA;&#x8BBE;&#x5907;</value></data>
   <data name="ProcessProfile_OutputHint.Text"><value>&#x8FDB;&#x7A0B;&#x8FD0;&#x884C;&#x65F6;&#xFF0C;&#x5C06;&#x5B83;&#x7684;&#x97F3;&#x9891;&#x6D41;&#x8DEF;&#x7531;&#x5230;&#x6B64;&#x8BBE;&#x5907;&#x3002;</value></data>
-  <data name="ProcessProfile_ProcessVolume.Text"><value>&#x8FDB;&#x7A0B;&#x97F3;&#x91CF;</value></data>
-  <data name="ProcessProfile_ProcessVolumeEnabled.Content"><value>&#x8BBE;&#x7F6E;&#x6B64;&#x8FDB;&#x7A0B;&#x7684;&#x97F3;&#x91CF;</value></data>
-  <data name="ProcessProfile_ProcessVolumeHint.Text"><value>&#x5173;&#x95ED;&#x65F6;&#x4FDD;&#x6301;&#x8FDB;&#x7A0B;&#x5F53;&#x524D;&#x97F3;&#x91CF;&#x3002;</value></data>
-  <data name="ProcessProfile_KeepCurrentVolume.Value"><value>&#x4FDD;&#x6301;&#x5F53;&#x524D;</value></data>
+  <data name="ProcessProfile_GlobalVolume.Text"><value>&#x547D;&#x4E2D;&#x65F6;&#x5168;&#x5C40;&#x97F3;&#x91CF;</value></data>
+  <data name="ProcessProfile_GlobalVolumeEnabled.Content"><value>&#x547D;&#x4E2D;&#x6B64;&#x89C4;&#x5219;&#x65F6;&#x8BBE;&#x7F6E;&#x5168;&#x5C40;&#x97F3;&#x91CF;</value></data>
+  <data name="ProcessProfile_GlobalVolumeHint.Text"><value>&#x5173;&#x95ED;&#x65F6;&#x4FDD;&#x6301;&#x5F53;&#x524D;&#x5168;&#x5C40;&#x97F3;&#x91CF;&#x3002;</value></data>
+  <data name="ProcessProfile_KeepCurrentGlobalVolume.Value"><value>&#x4FDD;&#x6301;&#x5F53;&#x524D;&#x5168;&#x5C40;&#x97F3;&#x91CF;</value></data>
   <data name="ProcessProfile_CurrentSpatial.Text"><value>&#x5F53;&#x524D;&#x7A7A;&#x95F4;&#x97F3;&#x9891;</value></data>
   <data name="ProcessProfile_SpatialLogic.Text"><value>&#x7A7A;&#x95F4;&#x97F3;&#x9891;&#x903B;&#x8F91;</value></data>
   <data name="ProcessProfile_SpatialHint.Text"><value>&#x7A7A;&#x95F4;&#x97F3;&#x9891;&#x683C;&#x5F0F;&#x4F1A;&#x81EA;&#x52A8;&#x9009;&#x62E9;&#x5BF9;&#x5E94;&#x7684;&#x63D0;&#x4F9B;&#x7A0B;&#x5E8F;&#x3002;&#x53EA;&#x6709;&#x683C;&#x5F0F;&#x63D0;&#x4F9B;&#x9884;&#x8BBE;&#x65F6;&#x624D;&#x80FD;&#x9009;&#x62E9;&#x9884;&#x8BBE;&#x3002;</value></data>
