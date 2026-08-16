@@ -1,0 +1,65 @@
+name: .NET Desktop
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Release]
+        platform: [x64]
+
+    env:
+      Project_Path: src/AudioSwitch.WinUI/AudioSwitch.WinUI.csproj
+      Runtime_Identifier: win-x64
+      Configuration: ${{ matrix.configuration }}
+      Platform: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore
+        shell: pwsh
+        run: >-
+          dotnet restore $env:Project_Path
+          --runtime $env:Runtime_Identifier
+          -p:Platform=$env:Platform
+
+      - name: Build WinUI app
+        shell: pwsh
+        run: >-
+          dotnet build $env:Project_Path
+          --configuration $env:Configuration
+          --runtime $env:Runtime_Identifier
+          -p:Platform=$env:Platform
+          --no-restore
+
+      # The project copies the browser extension into this build directory
+      # through the SyncChromeExtensionToAppX target.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioSwitch-${{ matrix.configuration }}-${{ matrix.platform }}
+          if-no-files-found: error
+          path: src/AudioSwitch.WinUI/bin/${{ matrix.platform }}/${{ matrix.configuration }}/net10.0-windows10.0.26100.0/win-x64/
