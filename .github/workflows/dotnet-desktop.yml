@@ -106,6 +106,92 @@ jobs:
           Compress-Archive -Path "$outputPath\*" -DestinationPath $archivePath -CompressionLevel Optimal
           "Release_Archive=$archivePath" >> $env:GITHUB_ENV
 
+      - name: Package signed MSIX installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tagVersion = '${{ github.ref_name }}'.TrimStart('v')
+          if ($tagVersion -notmatch '^\d+(\.\d+){0,3}$') {
+            throw "The release tag must contain a numeric version, for example v1.0.0; got '${{ github.ref_name }}'."
+          }
+
+          $versionParts = @($tagVersion.Split('.'))
+          while ($versionParts.Count -lt 4) { $versionParts += '0' }
+          $packageVersion = ($versionParts[0..3] -join '.')
+          $manifestPath = Join-Path $env:GITHUB_WORKSPACE 'src/AudioSwitch.WinUI/Package.appxmanifest'
+          $manifest = New-Object System.Xml.XmlDocument
+          $manifest.Load($manifestPath)
+          $identity = $manifest.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Identity']")
+          if ($null -eq $identity) { throw "Package identity was not found in $manifestPath" }
+          $identity.SetAttribute('Version', $packageVersion)
+          $manifest.Save($manifestPath)
+
+          $packageRoot = Join-Path $env:RUNNER_TEMP 'AudioSwitch-msix'
+          $certificateRoot = Join-Path $env:RUNNER_TEMP 'AudioSwitch-certificate'
+          New-Item -ItemType Directory -Force -Path $packageRoot, $certificateRoot | Out-Null
+
+          # The certificate is generated only for this CI package. The public
+          # .cer is released beside the MSIX so users can trust the publisher
+          # before installing the package.
+          $certificate = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject 'CN=AppPublisher' `
+            -FriendlyName 'AudioSwitch CI package signing' `
+            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -NotAfter (Get-Date).AddYears(1)
+          $certificateThumbprint = $certificate.Thumbprint
+          $pfxPath = Join-Path $certificateRoot 'AudioSwitch.pfx'
+          $cerPath = Join-Path $certificateRoot 'AudioSwitch.cer'
+          $passwordPlain = [Guid]::NewGuid().ToString('N')
+          $password = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
+          Export-PfxCertificate `
+            -Cert "Cert:\CurrentUser\My\$certificateThumbprint" `
+            -FilePath $pfxPath `
+            -Password $password | Out-Null
+          Export-Certificate `
+            -Cert "Cert:\CurrentUser\My\$certificateThumbprint" `
+            -FilePath $cerPath | Out-Null
+          Write-Output "::add-mask::$passwordPlain"
+
+          try {
+            dotnet publish $env:Project_Path `
+              --configuration $env:Configuration `
+              --runtime $env:Runtime_Identifier `
+              -p:Platform=$env:Platform `
+              -p:PublishReadyToRun=false `
+              -p:GenerateAppxPackageOnBuild=true `
+              -p:AppxBundle=Never `
+              -p:AppxPackageSigningEnabled=true `
+              -p:PackageCertificateKeyFile=$pfxPath `
+              -p:PackageCertificatePassword=$passwordPlain `
+              -p:PackageCertificateThumbprint=$certificateThumbprint `
+              -p:AppxPackageDir="$packageRoot\" `
+              --no-restore
+
+            $msix = Get-ChildItem -LiteralPath $packageRoot -Recurse -File -Filter '*.msix' | Select-Object -First 1
+            if ($null -eq $msix) { throw "MSIX package was not produced under $packageRoot" }
+
+            $installerPath = "AudioSwitch-${{ github.ref_name }}-${{ matrix.platform }}.msix"
+            $publicCertificatePath = "AudioSwitch-${{ github.ref_name }}-${{ matrix.platform }}.cer"
+            Copy-Item -LiteralPath $msix.FullName -Destination $installerPath -Force
+            Copy-Item -LiteralPath $cerPath -Destination $publicCertificatePath -Force
+            "Release_Installer=$installerPath" >> $env:GITHUB_ENV
+            "Release_Certificate=$publicCertificatePath" >> $env:GITHUB_ENV
+          }
+          finally {
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$certificateThumbprint" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload installer artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioSwitch-${{ github.ref_name }}-${{ matrix.platform }}-installer
+          if-no-files-found: error
+          path: |
+            AudioSwitch-${{ github.ref_name }}-${{ matrix.platform }}.msix
+            AudioSwitch-${{ github.ref_name }}-${{ matrix.platform }}.cer
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -114,6 +200,8 @@ jobs:
         run: >-
           gh release create "${{ github.ref_name }}"
           "$env:Release_Archive"
+          "$env:Release_Installer"
+          "$env:Release_Certificate"
           --verify-tag
           --title "AudioSwitch ${{ github.ref_name }}"
           --generate-notes

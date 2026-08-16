@@ -11,6 +11,7 @@
     <UseWinUI>true</UseWinUI>
     <WinUISDKReferences>false</WinUISDKReferences>
     <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -34,6 +35,8 @@
     </ItemGroup>
     <MakeDir Directories="$(OutDir)AppX\Assets" />
     <Copy SourceFiles="@(WinAppAssetFiles)" DestinationFiles="@(WinAppAssetFiles-&gt;'$(OutDir)AppX\Assets\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <MakeDir Directories="$(OutDir)Assets" />
+    <Copy SourceFiles="@(WinAppAssetFiles)" DestinationFiles="@(WinAppAssetFiles-&gt;'$(OutDir)Assets\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 
   <Target Name="SyncChromeExtensionToAppX" AfterTargets="SyncWinAppAssets">

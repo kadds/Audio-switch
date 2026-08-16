@@ -1,11 +1,9 @@
 using H.NotifyIcon;
+using H.NotifyIcon.Core;
 using Microsoft.Windows.AppLifecycle;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media.Imaging;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
+using System.Windows.Input;
 using Windows.Graphics;
 using WinRT.Interop;
 
@@ -16,19 +14,31 @@ public partial class App : Application
     private MainWindow? window;
     private MainPage? page;
     private TaskbarIcon? trayIcon;
-    private MenuFlyoutItem? trayOpenItem;
-    private MenuFlyoutItem? trayMonitorItem;
-    private MenuFlyoutItem? trayExitItem;
+    private PopupMenuItem? trayOpenItem;
+    private PopupMenuItem? trayMonitorItem;
+    private PopupMenuItem? trayExitItem;
+    private PopupMenu? trayMenu;
     private AppInstance? appInstance;
     private bool allowClose;
 
     public nint MainWindowHandle => window == null ? 0 : WindowNative.GetWindowHandle(window);
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(nint hWnd);
+    private sealed class ActionCommand : ICommand
+    {
+        private readonly Action execute;
 
-    [DllImport("psapi.dll", SetLastError = true)]
-    private static extern bool EmptyWorkingSet(nint hProcess);
+        public ActionCommand(Action execute) => this.execute = execute;
+
+        public event EventHandler? CanExecuteChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public bool CanExecute(object? parameter) => true;
+
+        public void Execute(object? parameter) => execute();
+    }
 
     public App()
     {
@@ -56,12 +66,16 @@ public partial class App : Application
         window = new MainWindow();
         page = window.ContentFrame.Content as MainPage;
         trayIcon = CreateTrayIcon();
-        trayIcon.ForceCreate();
+        // Keep the WinUI dispatcher at normal QoS while the tray icon is
+        // alive. Efficiency mode is intended for a permanently hidden app;
+        // this app restores its main window from the tray.
+        trayIcon.ForceCreate(enablesEfficiencyMode: false);
         window.AppWindow.Closing += AppWindow_Closing;
         window.Activate();
         try
         {
-            window.AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"));
+            string? appIconPath = FindAppIconPath();
+            if (appIconPath != null) window.AppWindow.SetIcon(appIconPath);
         }
         catch
         {
@@ -91,21 +105,21 @@ public partial class App : Application
     {
         if (allowClose) return;
         args.Cancel = true;
-        HideWindow();
+        sender.Hide();
     }
 
-    private void TrayOpen_Click(object? sender, RoutedEventArgs e)
+    private void TrayOpen_Click(object? sender, EventArgs e)
     {
         ShowWindow();
     }
 
-    private void TrayMonitor_Click(object? sender, RoutedEventArgs e)
+    private void TrayMonitor_Click(object? sender, EventArgs e)
     {
         ShowWindow();
         page?.StartMonitoring();
     }
 
-    private void TrayExit_Click(object? sender, RoutedEventArgs e)
+    private void TrayExit_Click(object? sender, EventArgs e)
     {
         allowClose = true;
         page?.Dispose();
@@ -130,60 +144,52 @@ public partial class App : Application
 
     private void HideWindow()
     {
-        if (window == null) return;
-        // H.NotifyIcon enables Efficiency Mode when the tray icon is created.
-        // Use its paired extension so the process is put back into the same
-        // background state whenever the window is hidden.
-        window.Hide(enableEfficiencyMode: true);
-        TrimHiddenWindowWorkingSet();
-    }
-
-    private static void TrimHiddenWindowWorkingSet()
-    {
-        try
-        {
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
-            using Process process = Process.GetCurrentProcess();
-            EmptyWorkingSet(process.Handle);
-        }
-        catch
-        {
-            // Working-set trimming is an optional memory optimization.
-        }
+        window?.AppWindow.Hide();
     }
 
     private void ShowWindow()
     {
         if (window == null) return;
-        // ForceCreate enables Efficiency Mode. The extension disables it before
-        // restoring the window, which is required for tray -> window activation.
-        window.Show(disableEfficiencyMode: true);
-        nint handle = WindowNative.GetWindowHandle(window);
-        if (handle == 0) return;
-        SetForegroundWindow(handle);
+        window.AppWindow.Show(activateWindow: true);
+        window.Activate();
     }
 
     private TaskbarIcon CreateTrayIcon()
     {
-        var icon = new TaskbarIcon
+        TaskbarIcon icon = window!.TrayIcon;
+        icon.ToolTipText = "Audio Switch";
+        icon.Id = Guid.Parse("a2bb0e31-59b1-4f5c-8d32-7e7b7e4d4e21");
+        icon.MenuActivation = PopupActivationMode.RightClick;
+        icon.LeftClickCommand = new ActionCommand(ShowWindow);
+        string? iconPath = FindAppIconPath();
+        if (iconPath != null)
         {
-            ToolTipText = "Audio Switch",
-            IconSource = new BitmapImage(new Uri("ms-appx:///Assets/AppIcon.ico")),
-            MenuActivation = H.NotifyIcon.Core.PopupActivationMode.LeftOrRightClick
-        };
-        var menu = new MenuFlyout();
-        trayOpenItem = new MenuFlyoutItem { Text = Localization.Text("Menu_OpenSettings") };
-        trayOpenItem.Click += TrayOpen_Click;
-        menu.Items.Add(trayOpenItem);
-        trayMonitorItem = new MenuFlyoutItem { Text = Localization.Text("MainPage_StartMonitoring") };
-        trayMonitorItem.Click += TrayMonitor_Click;
-        menu.Items.Add(trayMonitorItem);
-        menu.Items.Add(new MenuFlyoutSeparator());
-        trayExitItem = new MenuFlyoutItem { Text = Localization.Text("Menu_Exit") };
-        trayExitItem.Click += TrayExit_Click;
-        menu.Items.Add(trayExitItem);
-        icon.ContextFlyout = menu;
+            icon.Icon = new System.Drawing.Icon(iconPath);
+        }
+        trayMenu = new PopupMenu();
+        trayOpenItem = new PopupMenuItem(Localization.Text("Menu_OpenSettings"), TrayOpen_Click);
+        trayMenu.Items.Add(trayOpenItem);
+        trayMonitorItem = new PopupMenuItem(Localization.Text("MainPage_StartMonitoring"), TrayMonitor_Click);
+        trayMenu.Items.Add(trayMonitorItem);
+        trayMenu.Items.Add(new PopupMenuSeparator());
+        trayExitItem = new PopupMenuItem(Localization.Text("Menu_Exit"), TrayExit_Click);
+        trayMenu.Items.Add(trayExitItem);
+        icon.ContextMenuMode = ContextMenuMode.PopupMenu;
+        if (icon.TrayIcon is TrayIconWithContextMenu trayIconWithMenu)
+        {
+            trayIconWithMenu.ContextMenu = trayMenu;
+        }
         return icon;
+    }
+
+    private static string? FindAppIconPath()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"),
+            Path.Combine(AppContext.BaseDirectory, "AppX", "Assets", "AppIcon.ico")
+        };
+        return candidates.FirstOrDefault(File.Exists);
     }
 
     public void RefreshTrayLocalization()

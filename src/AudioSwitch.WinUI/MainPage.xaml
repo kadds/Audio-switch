@@ -200,12 +200,20 @@
                             <StackPanel Spacing="4">
                                 <TextBlock x:Name="SpatialDefaultProfileTitleTextBlock" Text="Default profile" Style="{StaticResource SubtitleTextBlockStyle}" />
                                 <TextBlock x:Name="SpatialDefaultProfileHintTextBlock" Text="Used when no process rule matches the foreground window." Opacity="0.68" TextWrapping="Wrap" />
-                                <ComboBox x:Name="SpatialDefaultProfileComboBox" SelectionChanged="SpatialDefaultProfileComboBox_SelectionChanged" HorizontalAlignment="Left" MinWidth="220" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <ComboBox x:Name="SpatialDefaultProfileComboBox" SelectionChanged="SpatialDefaultProfileComboBox_SelectionChanged" HorizontalAlignment="Left" MinWidth="220" />
+                                    <Button x:Name="AddCustomProfileButton" Content="Add custom preset" Click="AddCustomProfileButton_Click" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
                         <TextBlock Grid.Row="4" x:Name="SpatialOptionsTextBlock" Text="Windows spatial audio options - click to switch" Opacity="0.68" Margin="2,2,2,0" />
                         <Border Grid.Row="5" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="2">
                         <ListView x:Name="SpatialAudioOptionsListView" SelectionMode="Single" SelectionChanged="SpatialAudioOptionsListView_SelectionChanged" VerticalAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
                             <ListView.ItemTemplate>
                                 <DataTemplate>
                                     <Grid Padding="8" ColumnSpacing="10">

@@ -158,6 +158,33 @@ GetProfile 之后: Type = Game
 
 因此，原来的 CAPX setter 不是“调用成功但听感不明显”，而是只改了底层 CAPX 状态，没有走 Dolby Access 的运行时 profile 同步链路。WinUI provider 现已改为 `SetProfile → SyncProfile → GetProfile`，并以 Dolby AppService 回读作为成功条件。
 
+## Dolby 自定义 EQ（2026-08-16）
+
+继续对当前 Dolby Access 3.27 AppService 做无 UI 验证后，确认
+`CustomEqualizerSettings` 不能使用自定义的 `BandGains` 字段。发送 10 段 EQ
+后，Dolby 会将其规范化为以下结构：
+
+```json
+{
+  "CustomGainRange": 12.0,
+  "_dap20Gains": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "_user10Gains": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+```
+
+`_user10Gains` 是用户编辑的 10 段曲线，AudioSwitch 将其限制在 `-12` 到
+`+12 dB`，并通过相邻频段插值生成 20 段 `_dap20Gains`。`GetProfile` 会回读
+这两个数组；仅发送 `CustomEqualizerSettings: null` 会使 Dolby 自定义预设的
+EQ 模型拿到空值，Dolby Access 可能在打开 EQ 控件时抛出空引用异常。
+
+Dolby AppService 的 `Type` 仍然只接受原生的 `Custom1/Custom2/Custom3` 槽位。
+AudioSwitch 页面不把这些原生名称作为用户配置项，而是保存带有
+`AudioSwitch EQ: ` 前缀的自定义 Profile。应用任意一个 AudioSwitch 自定义
+Profile 时，AudioSwitch 都把当前选中的曲线写入 Dolby 的 `Custom3`，并以
+`Type = Custom3` 完成 `SetProfile → SyncProfile → GetProfile`；`Custom1` 和
+`Custom2` 不会被 AudioSwitch 自定义 EQ 使用。这样可以支持任意数量的
+AudioSwitch Profile，同时 Dolby 端始终只有一个被实时更新的运行时槽位。
+
 ## Game 映射验证记录
 
 1. 固定同一个端点，采集 Movie 的 blob：`01 02 00 00 00`。

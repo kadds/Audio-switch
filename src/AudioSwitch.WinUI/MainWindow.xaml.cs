@@ -1,3 +1,4 @@
+using H.NotifyIcon;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -14,6 +15,7 @@ namespace AudioSwitch_WinUI;
 public sealed partial class MainWindow : Window
 {
     public Frame ContentFrame => RootFrame;
+    public TaskbarIcon TrayIcon => TrayIconHost;
 
     public MainWindow()
     {

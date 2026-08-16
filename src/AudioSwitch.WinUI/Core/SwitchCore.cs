@@ -133,6 +133,115 @@ public sealed class AudioApiQueue : IDisposable
 }
 
 [Serializable]
+public sealed class DolbyEqualizerProfile
+{
+    public string Profile { get; set; } = "AudioSwitch EQ 1";
+    public bool Enabled { get; set; } = true;
+    public bool SurroundVirtualizerEnabled { get; set; }
+    public List<float> BandGains { get; set; } = DolbyEqualizerCatalog.CreateFlatGains();
+
+    public DolbyEqualizerProfile Clone() => new()
+    {
+        Profile = Profile,
+        Enabled = Enabled,
+        SurroundVirtualizerEnabled = SurroundVirtualizerEnabled,
+        BandGains = BandGains?.ToList() ?? DolbyEqualizerCatalog.CreateFlatGains()
+    };
+}
+
+[Serializable]
+public sealed class DolbyEqualizerSettings
+{
+    public List<DolbyEqualizerProfile> Profiles { get; set; } = DolbyEqualizerCatalog.CreateProfiles();
+
+    public DolbyEqualizerSettings Clone() => new()
+    {
+        Profiles = (Profiles ?? new List<DolbyEqualizerProfile>())
+            .Select(profile => profile?.Clone() ?? new DolbyEqualizerProfile())
+            .ToList()
+    };
+
+    public DolbyEqualizerProfile GetOrCreate(string profile)
+    {
+        string requested = DolbyEqualizerCatalog.IsApplicationProfile(profile)
+            ? profile
+            : DolbyEqualizerCatalog.ApplicationProfiles[0];
+        Profiles ??= new List<DolbyEqualizerProfile>();
+        DolbyEqualizerProfile? selected = Profiles.FirstOrDefault(item =>
+            item != null && string.Equals(item.Profile, requested, StringComparison.OrdinalIgnoreCase));
+        if (selected == null)
+        {
+            selected = new DolbyEqualizerProfile { Profile = requested };
+            Profiles.Add(selected);
+        }
+
+        selected.Profile = requested;
+        selected.BandGains ??= new List<float>();
+        if (selected.BandGains.Count != DolbyEqualizerCatalog.BandCount)
+        {
+            selected.BandGains = DolbyEqualizerCatalog.NormalizeGains(selected.BandGains);
+        }
+
+        return selected;
+    }
+}
+
+public static class DolbyEqualizerCatalog
+{
+    public const int BandCount = 10;
+    public const float MinimumGain = -12f;
+    public const float MaximumGain = 12f;
+    public const string ApplicationProfilePrefix = "AudioSwitch EQ: ";
+    public static readonly int[] CenterFrequencies = { 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+    public static readonly string[] ApplicationProfiles = { "AudioSwitch EQ 1", "AudioSwitch EQ 2", "AudioSwitch EQ 3" };
+    private static readonly string[] DolbyCustomProfiles = { "Custom1", "Custom2", "Custom3" };
+
+    public static bool IsApplicationProfile(string? profile) =>
+        !string.IsNullOrWhiteSpace(profile) &&
+        (ApplicationProfiles.Contains(profile, StringComparer.OrdinalIgnoreCase) ||
+         profile.StartsWith(ApplicationProfilePrefix, StringComparison.OrdinalIgnoreCase));
+
+    public static string CreateApplicationProfile(string name)
+    {
+        string normalized = string.Join(' ', (name ?? string.Empty).Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return ApplicationProfilePrefix + normalized;
+    }
+
+    public static string ToDolbyProfile(string profile)
+    {
+        int index = Array.FindIndex(ApplicationProfiles, item => string.Equals(item, profile, StringComparison.OrdinalIgnoreCase));
+        // AudioSwitch owns the curve data. Dolby Custom3 is used as the
+        // single runtime slot and is refreshed with the selected curve on
+        // every apply, so Custom1/Custom2 remain untouched.
+        return index >= 0 ? DolbyCustomProfiles[index] : IsApplicationProfile(profile) ? DolbyCustomProfiles[2] : profile;
+    }
+
+    public static bool IsDolbyCustomProfile(string? profile) =>
+        DolbyCustomProfiles.Contains(profile ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+
+    public static string? ToApplicationProfile(string? profile)
+    {
+        int index = Array.FindIndex(DolbyCustomProfiles, item => string.Equals(item, profile, StringComparison.OrdinalIgnoreCase));
+        return index >= 0 ? ApplicationProfiles[index] : null;
+    }
+
+    public static List<float> CreateFlatGains() => Enumerable.Repeat(0f, BandCount).ToList();
+
+    public static List<DolbyEqualizerProfile> CreateProfiles() =>
+        ApplicationProfiles.Select(profile => new DolbyEqualizerProfile { Profile = profile }).ToList();
+
+    public static List<float> NormalizeGains(IEnumerable<float>? values)
+    {
+        var normalized = (values ?? Array.Empty<float>())
+            .Take(BandCount)
+            .Select(value => float.IsFinite(value) ? Math.Clamp(value, MinimumGain, MaximumGain) : 0f)
+            .ToList();
+        while (normalized.Count < BandCount) normalized.Add(0f);
+        return normalized;
+    }
+}
+
+[Serializable]
 public sealed class ProcessSwitchItem
 {
     public string RuleId { get; set; } = Guid.NewGuid().ToString("N");
@@ -152,6 +261,7 @@ public sealed class ProcessSwitchItem
     public float? GlobalVolumePercent { get; set; }
     public string ActiveProfile { get; set; } = "Game";
     public string ActiveSpatialAudioModeId { get; set; } = "keep";
+    public DolbyEqualizerSettings DolbyEqualizer { get; set; } = new();
     [XmlIgnore]
     public string DisplayName => Name;
     [XmlIgnore]
@@ -203,6 +313,7 @@ public sealed class SwitchConfig
     public int HttpListenerPort { get; set; } = 8765;
     public string HttpListenerPassword { get; set; } = string.Empty;
     public bool BrowserIntegrationPromptDismissed { get; set; }
+    public List<DolbyEqualizerProfile> CustomEqualizerProfiles { get; set; } = new();
 
     public static SwitchConfig Load(string path)
     {
@@ -591,7 +702,9 @@ public sealed class AudioEndpointChoice
         int offset = raw.Length - 5;
         if (raw[offset] != 1 || raw[offset + 2] != 0 || raw[offset + 3] != 0 || raw[offset + 4] != 0) return "unknown";
         string[] profiles = { "Dynamic", "Game", "Movie", "Music", "Voice", "Custom1", "Custom2", "Custom3" };
-        return raw[offset + 1] < profiles.Length ? profiles[raw[offset + 1]] : $"Unknown({raw[offset + 1]})";
+        if (raw[offset + 1] >= profiles.Length) return $"Unknown({raw[offset + 1]})";
+        string profile = profiles[raw[offset + 1]];
+        return DolbyEqualizerCatalog.ToApplicationProfile(profile) ?? profile;
     }
 }
 
@@ -604,6 +717,7 @@ public sealed class SpatialAudioOption
     public string AvailabilityKey { get; init; } = string.Empty;
     public string Availability => Localization.Get(AvailabilityKey);
     public string FormatSubtype { get; init; } = string.Empty;
+    public bool IsEnabled { get; set; } = true;
 }
 
 public static class SpatialAudioModeCatalog
@@ -794,6 +908,21 @@ public static class AudioSystemState
         }
     }
 
+    public static bool IsSpatialAudioResultConfirmed(string result, string modeId)
+    {
+        if (string.IsNullOrWhiteSpace(result)) return false;
+
+        SpatialAudioOption option = SpatialAudioModeCatalog.FindById(modeId);
+        return result.StartsWith("C# spatial format unchanged:", StringComparison.OrdinalIgnoreCase) ||
+            result.StartsWith($"C# spatial format {option.Name}:", StringComparison.OrdinalIgnoreCase) ||
+            result.StartsWith($"C# spatial format {option.Name} refreshed:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsSpatialAudioPermissionDenied(string result) =>
+        result.Contains("AccessDenied", StringComparison.OrdinalIgnoreCase) ||
+        result.Contains("LicenseNotValidForAudioEndpoint", StringComparison.OrdinalIgnoreCase) ||
+        result.Contains("license is not valid for this audio endpoint", StringComparison.OrdinalIgnoreCase);
+
     private static bool SpatialFormatReadbackMatches(string? format, string modeId)
     {
         if (string.Equals(modeId, "off", StringComparison.OrdinalIgnoreCase))
@@ -971,7 +1100,7 @@ public interface IAudioProfileProvider
     IReadOnlyList<string> SupportedProfiles { get; }
     bool SupportsProfile(string profile);
     Task<bool> TryProbeAsync(AudioEndpointChoice endpoint);
-    Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply);
+    Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply, DolbyEqualizerSettings? equalizer = null);
 }
 
 public static class AudioProfileProviderRegistry
@@ -1018,7 +1147,7 @@ public static class AudioProfileProviderRegistry
 
 public sealed class DolbyCapxProfileProvider : IAudioProfileProvider
 {
-    private static readonly string[] Profiles = { "Dynamic", "Game", "Movie", "Music", "Voice", "Custom1", "Custom2", "Custom3" };
+    private static readonly string[] Profiles = { "Dynamic", "Game", "Movie", "Music", "Voice" };
     private const string DolbyAccessPackageFamilyName = "DolbyLaboratories.DolbyAccess_rz1tebttyb220";
     private const string DolbyAccessAppServiceName = "com.DolbyLaboratories.DolbyAccess.";
     private const string DolbyAtmosForHeadphonesCodec = "{8F3BBD02-6BBE-4B60-9F8B-406837CE466F}";
@@ -1028,17 +1157,20 @@ public sealed class DolbyCapxProfileProvider : IAudioProfileProvider
     public string DefaultActiveProfile => "Game";
     public IReadOnlyList<string> SupportedProfiles => Profiles;
 
-    public bool SupportsProfile(string profile) => Profiles.Contains(profile, StringComparer.OrdinalIgnoreCase);
+    public bool SupportsProfile(string profile) =>
+        Profiles.Contains(profile, StringComparer.OrdinalIgnoreCase) || DolbyEqualizerCatalog.IsApplicationProfile(profile);
 
     public async Task<bool> TryProbeAsync(AudioEndpointChoice endpoint)
     {
         try
         {
             string? profile = await ReadRuntimeProfileAsync(endpoint.EndpointPath).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(profile) || !SupportsProfile(profile)) return false;
+            if (string.IsNullOrWhiteSpace(profile) ||
+                (!SupportsProfile(profile) && !DolbyEqualizerCatalog.IsDolbyCustomProfile(profile))) return false;
 
-            endpoint.Profile = profile;
-            endpoint.ProbeStatus = $"Dolby Access AppService / {profile}";
+            string displayProfile = DolbyEqualizerCatalog.ToApplicationProfile(profile) ?? profile;
+            endpoint.Profile = displayProfile;
+            endpoint.ProbeStatus = $"Dolby Access AppService / {displayProfile}";
             return true;
         }
         catch
@@ -1049,37 +1181,47 @@ public sealed class DolbyCapxProfileProvider : IAudioProfileProvider
         }
     }
 
-    public async Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply)
+    public async Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply, DolbyEqualizerSettings? equalizer = null)
     {
         if (!SupportsProfile(profile)) throw new ArgumentException($"Unsupported spatial audio preset: {profile}", nameof(profile));
         if (!apply) return $"dry-run: Dolby Access AppService profile -> {profile}";
 
-        string actual = await ApplyRuntimeProfileAsync(endpointPath, profile).ConfigureAwait(false);
-        return $"Dolby Access AppService profile {profile} applied; runtime readback={actual}";
+        string dolbyProfile = DolbyEqualizerCatalog.ToDolbyProfile(profile);
+        DolbyProfileReadback readback = await ApplyRuntimeProfileAsync(endpointPath, profile, dolbyProfile, equalizer).ConfigureAwait(false);
+        string equalizerStatus = DolbyEqualizerCatalog.IsApplicationProfile(profile)
+            ? $"; EQ readback={(readback.HasEqualizerGains ? $"{DolbyEqualizerCatalog.BandCount} bands" : "not returned by Dolby")}"
+            : string.Empty;
+        return $"Dolby Access AppService profile {profile} ({dolbyProfile}) applied; runtime readback={readback.Type}{equalizerStatus}";
     }
 
-    private static async Task<string> ApplyRuntimeProfileAsync(string endpointPath, string profile)
+    private sealed record DolbyProfileReadback(string Type, bool HasEqualizerGains);
+
+    private static async Task<DolbyProfileReadback> ApplyRuntimeProfileAsync(
+        string endpointPath,
+        string profile,
+        string dolbyProfile,
+        DolbyEqualizerSettings? equalizer)
     {
         using AppServiceConnection connection = await OpenDolbyAccessAppServiceAsync();
-        string profileParameters = BuildProfileParameters(profile);
+        string profileParameters = BuildProfileParameters(profile, dolbyProfile, equalizer);
 
         await SendDolbyRequestAsync(connection, CreateRequest("SetProfile", endpointPath, profileParameters));
         await SendDolbyRequestAsync(connection, CreateRequest("SyncProfile", endpointPath, profileParameters));
         AppServiceResponse response = await SendDolbyRequestAsync(connection, CreateRequest("GetProfile", endpointPath));
-        string actual = ReadProfileType(response);
-        if (!string.Equals(actual, profile, StringComparison.OrdinalIgnoreCase))
+        DolbyProfileReadback readback = ReadProfile(response);
+        if (!string.Equals(readback.Type, dolbyProfile, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException($"Dolby Access AppService returned profile '{actual}', expected '{profile}'.");
+            throw new InvalidOperationException($"Dolby Access AppService returned profile '{readback.Type}', expected '{dolbyProfile}'.");
         }
 
-        return actual;
+        return readback;
     }
 
     private static async Task<string?> ReadRuntimeProfileAsync(string endpointPath)
     {
         using AppServiceConnection connection = await OpenDolbyAccessAppServiceAsync();
         AppServiceResponse response = await SendDolbyRequestAsync(connection, CreateRequest("GetProfile", endpointPath));
-        return ReadProfileType(response);
+        return ReadProfile(response).Type;
     }
 
     private static async Task<AppServiceConnection> OpenDolbyAccessAppServiceAsync()
@@ -1128,7 +1270,7 @@ public sealed class DolbyCapxProfileProvider : IAudioProfileProvider
         return request;
     }
 
-    private static string ReadProfileType(AppServiceResponse response)
+    private static DolbyProfileReadback ReadProfile(AppServiceResponse response)
     {
         if (!response.Message.TryGetValue("ProfileParameters", out object? value) || value is not string json)
         {
@@ -1136,25 +1278,76 @@ public sealed class DolbyCapxProfileProvider : IAudioProfileProvider
         }
 
         using JsonDocument document = JsonDocument.Parse(json);
-        return document.RootElement.TryGetProperty("Type", out JsonElement type)
-            ? type.GetString() ?? string.Empty
+        JsonElement root = document.RootElement;
+        string type = root.TryGetProperty("Type", out JsonElement typeValue)
+            ? typeValue.GetString() ?? string.Empty
             : string.Empty;
+        bool hasEqualizerGains = root.TryGetProperty("CustomEqualizerSettings", out JsonElement settings) &&
+                                 settings.ValueKind == JsonValueKind.Object &&
+                                 settings.TryGetProperty("_user10Gains", out JsonElement gains) &&
+                                 gains.ValueKind == JsonValueKind.Array &&
+                                 gains.GetArrayLength() == DolbyEqualizerCatalog.BandCount &&
+                                 settings.TryGetProperty("_dap20Gains", out JsonElement dapGains) &&
+                                 dapGains.ValueKind == JsonValueKind.Array &&
+                                 dapGains.GetArrayLength() == 20;
+        return new DolbyProfileReadback(type, hasEqualizerGains);
     }
 
-    private static string BuildProfileParameters(string profile)
+    private static string BuildProfileParameters(string profile, string dolbyProfile, DolbyEqualizerSettings? equalizer)
     {
+        object? customEqualizerSettings = null;
+        bool? surroundVirtualizerEnabled = null;
+        if (DolbyEqualizerCatalog.IsApplicationProfile(profile))
+        {
+            DolbyEqualizerProfile selected = equalizer?.GetOrCreate(profile) ?? new DolbyEqualizerProfile { Profile = profile };
+            surroundVirtualizerEnabled = selected.SurroundVirtualizerEnabled;
+            IEnumerable<float> gains = selected.Enabled
+                ? selected.BandGains
+                : DolbyEqualizerCatalog.CreateFlatGains();
+            List<float> normalizedGains = DolbyEqualizerCatalog.NormalizeGains(gains);
+            customEqualizerSettings = new Dictionary<string, object?>
+            {
+                ["CustomGainRange"] = (double)DolbyEqualizerCatalog.MaximumGain,
+                ["_dap20Gains"] = ExpandToDap20Gains(normalizedGains),
+                ["_user10Gains"] = normalizedGains
+                    .Select(value => Math.Round(value, 1))
+                    .ToArray()
+            };
+        }
+
         var parameters = new Dictionary<string, object?>
         {
             ["IntelligentEqualizerType"] = "Detailed",
-            ["CustomEqualizerSettings"] = null,
+            ["CustomEqualizerSettings"] = customEqualizerSettings,
             ["IsPerformanceMode"] = null,
-            ["IsSurroundVirtualizerEnabled"] = null,
+            ["IsSurroundVirtualizerEnabled"] = surroundVirtualizerEnabled,
             ["IsDialogueEnhancerEnabled"] = null,
             ["IsVolumeLevelerEnabled"] = null,
             ["GamingSubProfile"] = null,
-            ["Type"] = profile
+            ["Type"] = dolbyProfile
         };
         return JsonSerializer.Serialize(parameters);
+    }
+
+    private static double[] ExpandToDap20Gains(IReadOnlyList<float> user10Gains)
+    {
+        if (user10Gains.Count == 0) return Enumerable.Repeat(0d, 20).ToArray();
+        if (user10Gains.Count == 1) return Enumerable.Repeat((double)user10Gains[0], 20).ToArray();
+
+        // Dolby keeps both its 10-band user curve and a 20-band DAP curve.
+        // Interpolate between neighboring user bands so the runtime receives
+        // a smooth curve instead of a second, unrelated set of gains.
+        return Enumerable.Range(0, 20)
+            .Select(index =>
+            {
+                double position = index * (user10Gains.Count - 1d) / 19d;
+                int lower = Math.Clamp((int)Math.Floor(position), 0, user10Gains.Count - 1);
+                int upper = Math.Clamp(lower + 1, 0, user10Gains.Count - 1);
+                double fraction = position - lower;
+                return user10Gains[lower] + ((user10Gains[upper] - user10Gains[lower]) * fraction);
+            })
+            .Select(value => Math.Round(value, 1))
+            .ToArray();
     }
 
 }
@@ -1209,7 +1402,7 @@ public sealed class DtsSoundUnboundProfileProvider : IAudioProfileProvider
         }
     }
 
-    public async Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply)
+    public async Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply, DolbyEqualizerSettings? equalizer = null)
     {
         if (!ProfileBlobs.TryGetValue(profile, out string? blobName))
         {

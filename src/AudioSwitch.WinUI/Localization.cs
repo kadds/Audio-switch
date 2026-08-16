@@ -27,7 +27,15 @@ internal static class Localization
                 "en-US" => "en-US",
                 _ => systemLanguage.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en-US"
             };
-            ApplicationLanguages.PrimaryLanguageOverride = LanguageTag;
+
+            try
+            {
+                ApplicationLanguages.PrimaryLanguageOverride = LanguageTag;
+            }
+            catch
+            {
+            }
+
             loader = new ResourceLoader();
         }
         catch
@@ -46,7 +54,28 @@ internal static class Localization
         try
         {
             string resourceId = key.Replace('.', '/');
-            string value = loader?.GetString(resourceId) ?? string.Empty;
+            string value = string.Empty;
+            if (loader != null)
+            {
+                try
+                {
+                    value = loader.GetString(resourceId);
+                }
+                catch
+                {
+                }
+
+                if (string.IsNullOrEmpty(value) && !string.Equals(resourceId, key, StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        value = loader.GetString(key);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
             return string.IsNullOrEmpty(value) ? key : value;
         }
         catch

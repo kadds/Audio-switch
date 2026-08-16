@@ -8,6 +8,7 @@ public sealed partial class ProcessProfileView : UserControl
 {
     private bool suppressChanges = true;
     private bool volumeProtectionEnabled = true;
+    private IReadOnlyList<string> customProfileNames = Array.Empty<string>();
     private readonly ProcessAddressRule? addressRule;
     private readonly ProcessSwitchItem? parentModel;
 
@@ -142,6 +143,7 @@ public sealed partial class ProcessProfileView : UserControl
         PresetHintTextBlock.Text = Localization.Text("ProcessProfile_PresetHint");
         ActivePresetTextBlock.Text = Localization.Text("ProcessProfile_ActivePreset");
         TestActiveTextBlock.Text = Localization.Text("ProcessProfile_Test");
+        ProfileSettingsTabItem.Header = Localization.Text("ProcessProfile_SettingsTab");
         ProcessPathTextBlock.Text = string.IsNullOrWhiteSpace(Model.ExecutablePath)
             ? Localization.Text("ProcessProfile_PathUnavailable")
             : Localization.FormatValue("ProcessProfile_Path", Model.ExecutablePath);
@@ -163,6 +165,15 @@ public sealed partial class ProcessProfileView : UserControl
         EndpointComboBox.SelectedItem = selected;
         suppressChanges = false;
         RefreshCurrentMatch();
+    }
+
+    public void SetCustomProfiles(IEnumerable<string> profiles)
+    {
+        customProfileNames = profiles
+            .Where(profile => !string.IsNullOrWhiteSpace(profile))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        RefreshPresetChoices();
     }
 
     public void SetEndpoint(AudioEndpointChoice endpoint, string endpointFile)
@@ -342,7 +353,10 @@ public sealed partial class ProcessProfileView : UserControl
     {
         IAudioProfileProvider? provider = AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId);
         comboBox.IsEnabled = provider != null;
-        comboBox.ItemsSource = provider?.SupportedProfiles ?? Array.Empty<string>();
+        IReadOnlyList<string> profiles = provider is DolbyCapxProfileProvider
+            ? provider.SupportedProfiles.Concat(customProfileNames).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+            : provider?.SupportedProfiles ?? Array.Empty<string>();
+        comboBox.ItemsSource = profiles;
 
         if (provider == null)
         {

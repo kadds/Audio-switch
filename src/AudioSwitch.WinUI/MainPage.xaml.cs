@@ -62,7 +62,8 @@ public sealed partial class MainPage : Page, IDisposable
         string? EndpointPath,
         float? GlobalVolumePercent,
         string ActiveProfile,
-        string ActiveSpatialAudioModeId);
+        string ActiveSpatialAudioModeId,
+        DolbyEqualizerSettings DolbyEqualizer);
 
     private sealed record HttpStateMatch(ProcessSwitchItem Rule, HttpStateMessage State, int Order);
     private sealed record AddressRuleMatch(ProcessSwitchItem Parent, ProcessAddressRule Rule, HttpStateMessage State, int Order);
@@ -210,6 +211,7 @@ public sealed partial class MainPage : Page, IDisposable
         SpatialAudioCurrentOutputText.Text = Localization.Text("MainPage_ReadingOutput");
         SpatialDefaultProfileTitleTextBlock.Text = Localization.Text("MainPage_SpatialDefaultProfileTitle");
         SpatialDefaultProfileHintTextBlock.Text = Localization.Text("MainPage_SpatialDefaultProfileHint");
+        AddCustomProfileButton.Content = Localization.Content("MainPage_AddCustomProfile");
         SpatialOptionsTextBlock.Text = Localization.Text("MainPage_SpatialOptions");
         AudioCurveTitleTextBlock.Text = Localization.Text("MainPage_AudioCurveTitle");
         AudioCurveHintTextBlock.Text = Localization.Text("MainPage_AudioCurveHint");
@@ -549,6 +551,13 @@ public sealed partial class MainPage : Page, IDisposable
         lastDefaultEndpointPath = endpointPath;
         lastDefaultSpatialAudioModeId = spatialModeId;
         audioStateInitialized = true;
+        if (outputChanged)
+        {
+            foreach (SpatialAudioOption option in SpatialAudioModeCatalog.Options)
+            {
+                option.IsEnabled = true;
+            }
+        }
         if (outputChanged) audioCurveCapture.SetEndpoint(endpointPath);
 
         bool globalSettingsChanged = false;
@@ -976,9 +985,44 @@ public sealed partial class MainPage : Page, IDisposable
             audio.DefaultEndpointPath,
             option.Id,
             apply: true));
-        UpdateGlobalSpatialAudio(option.Id);
         Log(result);
+
+        bool confirmed = AudioSystemState.IsSpatialAudioResultConfirmed(result, option.Id);
+        if (confirmed)
+        {
+            option.IsEnabled = true;
+            UpdateGlobalSpatialAudio(option.Id);
+        }
+        else if (AudioSystemState.IsSpatialAudioPermissionDenied(result))
+        {
+            option.IsEnabled = false;
+            Log($"Spatial audio option disabled for the current endpoint: {option.Name}.");
+        }
+
         await RefreshAudioStateAsync();
+
+        if (!confirmed && !string.Equals(lastDefaultSpatialAudioModeId, option.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            RestoreGlobalSpatialAudioFromActual(lastDefaultSpatialAudioModeId);
+        }
+    }
+
+    private void RestoreGlobalSpatialAudioFromActual(string modeId)
+    {
+        if (string.IsNullOrWhiteSpace(modeId) || string.Equals(modeId, "keep", StringComparison.OrdinalIgnoreCase)) return;
+
+        // A failed user-initiated switch must not leave the desired global profile
+        // pointing at the provider that Windows rejected for this endpoint.
+        config.GlobalSpatialAudioModeId = modeId;
+        IAudioProfileProvider? provider = AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId);
+        if (provider == null || !provider.SupportsProfile(config.GlobalActiveProfile))
+        {
+            config.GlobalActiveProfile = provider?.DefaultActiveProfile ?? string.Empty;
+        }
+
+        SaveConfig();
+        RefreshGlobalSpatialProfileChoices();
+        activeGlobalSettingsSignature = string.Empty;
     }
 
     private void UpdateGlobalOutput(string endpointPath)
@@ -1025,13 +1069,262 @@ public sealed partial class MainPage : Page, IDisposable
         IAudioProfileProvider? provider = AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId);
 
         suppressGlobalProfileSelection = true;
-        SpatialDefaultProfileComboBox.ItemsSource = provider?.SupportedProfiles ?? Array.Empty<string>();
-        SpatialDefaultProfileComboBox.IsEnabled = provider != null && provider.SupportedProfiles.Count > 0;
+        IReadOnlyList<string> globalProfiles = GetSupportedProfiles(provider);
+        SpatialDefaultProfileComboBox.ItemsSource = globalProfiles;
+        SpatialDefaultProfileComboBox.IsEnabled = provider != null && globalProfiles.Count > 0;
+        AddCustomProfileButton.IsEnabled = provider is DolbyCapxProfileProvider;
         SpatialDefaultProfileComboBox.SelectedItem = provider != null && provider.SupportsProfile(config.GlobalActiveProfile)
             ? config.GlobalActiveProfile
             : provider?.DefaultActiveProfile;
         suppressGlobalProfileSelection = false;
     }
+
+    private IReadOnlyList<string> GetCustomProfileNames() =>
+        (config.CustomEqualizerProfiles ?? new List<DolbyEqualizerProfile>())
+            .Where(profile => profile != null && DolbyEqualizerCatalog.IsApplicationProfile(profile.Profile))
+            .Select(profile => profile.Profile)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private DolbyEqualizerSettings GetCustomEqualizerSettings()
+    {
+        config.CustomEqualizerProfiles ??= new List<DolbyEqualizerProfile>();
+        return new DolbyEqualizerSettings { Profiles = config.CustomEqualizerProfiles };
+    }
+
+    private IReadOnlyList<string> GetSupportedProfiles(IAudioProfileProvider? provider)
+    {
+        if (provider == null) return Array.Empty<string>();
+        if (provider is not DolbyCapxProfileProvider) return provider.SupportedProfiles;
+
+        return provider.SupportedProfiles
+            .Concat(GetCustomProfileNames())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private async void AddCustomProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        string modeId = !string.IsNullOrWhiteSpace(config.GlobalSpatialAudioModeId)
+            ? config.GlobalSpatialAudioModeId
+            : lastDefaultSpatialAudioModeId;
+        if (AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId) is not DolbyCapxProfileProvider) return;
+
+        config.CustomEqualizerProfiles ??= new List<DolbyEqualizerProfile>();
+        string? selectedProfile = SpatialDefaultProfileComboBox.SelectedItem as string;
+        DolbyEqualizerProfile? editingProfile = config.CustomEqualizerProfiles.FirstOrDefault(profile =>
+            profile != null && string.Equals(profile.Profile, selectedProfile, StringComparison.OrdinalIgnoreCase));
+        string initialName = editingProfile == null
+            ? $"EQ {config.CustomEqualizerProfiles.Count + 1}"
+            : editingProfile.Profile.StartsWith(DolbyEqualizerCatalog.ApplicationProfilePrefix, StringComparison.OrdinalIgnoreCase)
+                ? editingProfile.Profile[DolbyEqualizerCatalog.ApplicationProfilePrefix.Length..].Trim()
+                : editingProfile.Profile;
+
+        var nameBox = new TextBox
+        {
+            Header = Localization.Text("MainPage_CustomProfileName"),
+            Text = initialName,
+            PlaceholderText = Localization.Text("MainPage_CustomProfileNamePlaceholder")
+        };
+        var enabledCheckBox = new CheckBox
+        {
+            Content = Localization.Content("MainPage_CustomProfileEnabled"),
+            IsChecked = editingProfile?.Enabled ?? true,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        var surroundVirtualizerCheckBox = new CheckBox
+        {
+            Content = Localization.Content("MainPage_CustomProfileSurroundVirtualizer"),
+            IsChecked = editingProfile?.SurroundVirtualizerEnabled ?? false,
+            Margin = new Thickness(0, 2, 0, 0)
+        };
+        var validationText = new TextBlock
+        {
+            Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.OrangeRed),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        var bandsPanel = new StackPanel { Spacing = 7, Margin = new Thickness(0, 10, 0, 0) };
+        List<Slider> sliders = new();
+        List<float> initialGains = DolbyEqualizerCatalog.NormalizeGains(editingProfile?.BandGains);
+        for (int index = 0; index < DolbyEqualizerCatalog.BandCount; index++)
+        {
+            var row = new Grid { ColumnSpacing = 10 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(62) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+
+            var frequency = new TextBlock
+            {
+                Text = FormatEqualizerFrequency(DolbyEqualizerCatalog.CenterFrequencies[index]),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            ToolTipService.SetToolTip(frequency, Localization.Get($"MainPage_CustomProfileBand{index}.ToolTip"));
+            Grid.SetColumn(frequency, 0);
+            var slider = new Slider
+            {
+                Minimum = DolbyEqualizerCatalog.MinimumGain,
+                Maximum = DolbyEqualizerCatalog.MaximumGain,
+                StepFrequency = 0.5,
+                Value = initialGains[index],
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
+            Grid.SetColumn(slider, 1);
+            var value = new TextBlock
+            {
+                Text = FormatEqualizerGain(initialGains[index]),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Opacity = 0.78
+            };
+            Grid.SetColumn(value, 2);
+            var bandLabel = new TextBlock
+            {
+                Text = Localization.Get($"MainPage_CustomProfileBandLabel{index}.Text"),
+                FontSize = 12,
+                Opacity = 0.68,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(bandLabel, 3);
+            slider.ValueChanged += (_, args) =>
+            {
+                if (!double.IsNaN(args.NewValue)) value.Text = FormatEqualizerGain((float)args.NewValue);
+            };
+            row.Children.Add(frequency);
+            row.Children.Add(slider);
+            row.Children.Add(value);
+            row.Children.Add(bandLabel);
+            bandsPanel.Children.Add(row);
+            sliders.Add(slider);
+        }
+
+        var body = new StackPanel { Spacing = 6 };
+        body.Children.Add(new TextBlock
+        {
+            Text = Localization.Text("MainPage_CustomProfileHint"),
+            Opacity = 0.72,
+            TextWrapping = TextWrapping.Wrap
+        });
+        body.Children.Add(new TextBlock
+        {
+            Text = Localization.Get("MainPage_CustomProfileBandHint.Text"),
+            Opacity = 0.58,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap
+        });
+        body.Children.Add(nameBox);
+        body.Children.Add(enabledCheckBox);
+        body.Children.Add(surroundVirtualizerCheckBox);
+        body.Children.Add(bandsPanel);
+        body.Children.Add(validationText);
+
+        var dialog = new ContentDialog
+        {
+            Title = Localization.Text(editingProfile == null
+                ? "MainPage_CustomProfileDialogTitle"
+                : "MainPage_CustomProfileEditTitle"),
+            PrimaryButtonText = Localization.Text("MainPage_CustomProfileSave"),
+            SecondaryButtonText = editingProfile == null
+                ? null
+                : Localization.Text("MainPage_CustomProfileDelete"),
+            CloseButtonText = Localization.Text("MainPage_CustomProfileCancel"),
+            DefaultButton = ContentDialogButton.Primary,
+            Content = new ScrollViewer
+            {
+                Content = body,
+                MaxHeight = 560,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            },
+            XamlRoot = XamlRoot
+        };
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            string name = nameBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                validationText.Text = Localization.Text("MainPage_CustomProfileNameRequired");
+                args.Cancel = true;
+                return;
+            }
+
+            string profileId = DolbyEqualizerCatalog.CreateApplicationProfile(name);
+            bool duplicate = config.CustomEqualizerProfiles.Any(profile =>
+                profile != null && !ReferenceEquals(profile, editingProfile) &&
+                string.Equals(profile.Profile, profileId, StringComparison.OrdinalIgnoreCase));
+            if (duplicate)
+            {
+                validationText.Text = Localization.Text("MainPage_CustomProfileNameDuplicate");
+                args.Cancel = true;
+            }
+        };
+
+        ContentDialogResult result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Secondary && editingProfile != null)
+        {
+            DeleteCustomProfile(editingProfile);
+            return;
+        }
+        if (result != ContentDialogResult.Primary) return;
+
+        string profileName = DolbyEqualizerCatalog.CreateApplicationProfile(nameBox.Text.Trim());
+        DolbyEqualizerProfile savedProfile = editingProfile ?? new DolbyEqualizerProfile();
+        savedProfile.Profile = profileName;
+        savedProfile.Enabled = enabledCheckBox.IsChecked == true;
+        savedProfile.SurroundVirtualizerEnabled = surroundVirtualizerCheckBox.IsChecked == true;
+        savedProfile.BandGains = sliders.Select(slider => (float)slider.Value).ToList();
+        if (editingProfile == null) config.CustomEqualizerProfiles.Add(savedProfile);
+        SaveConfig();
+        RefreshGlobalSpatialProfileChoices();
+        if (ProfileEditorHost.Content is ProcessProfileView view) view.SetCustomProfiles(GetCustomProfileNames());
+    }
+
+    private void DeleteCustomProfile(DolbyEqualizerProfile profile)
+    {
+        config.CustomEqualizerProfiles ??= new List<DolbyEqualizerProfile>();
+        config.CustomEqualizerProfiles.Remove(profile);
+        string deletedProfile = profile.Profile;
+
+        if (string.Equals(config.GlobalActiveProfile, deletedProfile, StringComparison.OrdinalIgnoreCase))
+        {
+            config.GlobalActiveProfile = DefaultProfileForMode(config.GlobalSpatialAudioModeId);
+        }
+
+        foreach (ProcessSwitchItem process in config.Processes)
+        {
+            ClearDeletedProfileReference(process, deletedProfile);
+            foreach (ProcessAddressRule addressRule in process.AddressRules ?? new List<ProcessAddressRule>())
+            {
+                if (addressRule.Action != null) ClearDeletedProfileReference(addressRule.Action, deletedProfile);
+            }
+        }
+
+        SaveConfig();
+        activeGlobalSettingsSignature = string.Empty;
+        RefreshGlobalSpatialProfileChoices();
+        if (ProfileEditorHost.Content is ProcessProfileView view)
+        {
+            view.SetCustomProfiles(GetCustomProfileNames());
+        }
+        if (monitoring && audioStateInitialized) MonitorTimer_Tick(monitorTimer, new object());
+    }
+
+    private static void ClearDeletedProfileReference(ProcessSwitchItem item, string deletedProfile)
+    {
+        if (!string.Equals(item.ActiveProfile, deletedProfile, StringComparison.OrdinalIgnoreCase)) return;
+        IAudioProfileProvider? provider = AudioProfileProviderRegistry.FindForSpatialAudioMode(item.ActiveSpatialAudioModeId);
+        item.ActiveProfile = provider?.DefaultActiveProfile ?? string.Empty;
+    }
+
+    private static string DefaultProfileForMode(string? modeId) =>
+        AudioProfileProviderRegistry.FindForSpatialAudioMode(modeId)?.DefaultActiveProfile ?? string.Empty;
+
+    private static string FormatEqualizerFrequency(int frequency) => frequency >= 1000
+        ? $"{frequency / 1000d:0.#} kHz"
+        : $"{frequency} Hz";
+
+    private static string FormatEqualizerGain(float gain) => $"{gain:0.0} dB";
 
     private void SpatialDefaultProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -1046,7 +1339,14 @@ public sealed partial class MainPage : Page, IDisposable
         config.GlobalActiveProfile = profile;
         SaveConfig();
         activeGlobalSettingsSignature = string.Empty;
-        if (monitoring && audioStateInitialized) MonitorTimer_Tick(monitorTimer, new object());
+
+        // The monitor intentionally ignores AudioSwitch while its own window is
+        // foreground. A profile selected from this ComboBox must therefore be
+        // applied directly instead of waiting for the foreground monitor.
+        if (RunGlobalProfileAsync(profile, modeId, "global-spatial"))
+        {
+            activeGlobalSettingsSignature = GlobalSettingsSignature();
+        }
     }
 
     private void RefreshProfileEditorEndpoints()
@@ -1054,6 +1354,7 @@ public sealed partial class MainPage : Page, IDisposable
         if (ProfileEditorHost.Content is ProcessProfileView view)
         {
             view.SetEndpoints(endpoints);
+            view.SetCustomProfiles(GetCustomProfileNames());
             if (view.SelectedEndpoint is { IsKeepCurrent: false } endpoint) ProbeEndpointForView(view, endpoint);
         }
     }
@@ -1091,6 +1392,7 @@ public sealed partial class MainPage : Page, IDisposable
         var view = new ProcessProfileView(model, ReadEndpointPath(model.EndpointFile));
         bool volumeChanged = view.SetVolumeProtection(config.VolumeProtectionEnabled);
         view.SetEndpoints(endpoints);
+        view.SetCustomProfiles(GetCustomProfileNames());
         view.SettingsChanged += ProfileView_SettingsChanged;
         view.TestActiveRequested += ProfileView_TestActiveRequested;
         ProfileEditorHost.Content = view;
@@ -1109,6 +1411,7 @@ public sealed partial class MainPage : Page, IDisposable
             parent);
         bool volumeChanged = view.SetVolumeProtection(config.VolumeProtectionEnabled);
         view.SetEndpoints(endpoints);
+        view.SetCustomProfiles(GetCustomProfileNames());
         view.SettingsChanged += ProfileView_SettingsChanged;
         view.TestActiveRequested += ProfileView_TestActiveRequested;
         ProfileEditorHost.Content = view;
@@ -1159,7 +1462,8 @@ public sealed partial class MainPage : Page, IDisposable
             ReadEndpointPath(model.EndpointFile),
             model.GlobalVolumePercent,
             model.ActiveProfile,
-            model.ActiveSpatialAudioModeId);
+            model.ActiveSpatialAudioModeId,
+            model.DolbyEqualizer?.Clone() ?? new DolbyEqualizerSettings());
         UpdateProcessContextMenuState();
         Log($"Copied rule from {model.DisplayName}.");
     }
@@ -1175,6 +1479,7 @@ public sealed partial class MainPage : Page, IDisposable
         target.GlobalVolumePercent = VolumeSafety.Clamp(copiedProcessRule.GlobalVolumePercent, config.VolumeProtectionEnabled);
         target.ActiveProfile = copiedProcessRule.ActiveProfile;
         target.ActiveSpatialAudioModeId = copiedProcessRule.ActiveSpatialAudioModeId;
+        target.DolbyEqualizer = copiedProcessRule.DolbyEqualizer.Clone();
         if (string.IsNullOrWhiteSpace(copiedProcessRule.EndpointPath))
         {
             target.EndpointFile = string.Empty;
@@ -1370,7 +1675,8 @@ public sealed partial class MainPage : Page, IDisposable
                 EndpointFile = parent.EndpointFile,
                 ActiveProfile = parent.ActiveProfile,
                 ActiveSpatialAudioModeId = parent.ActiveSpatialAudioModeId,
-                GlobalVolumePercent = parent.GlobalVolumePercent
+                GlobalVolumePercent = parent.GlobalVolumePercent,
+                DolbyEqualizer = parent.DolbyEqualizer?.Clone() ?? new DolbyEqualizerSettings()
             }
         };
         parent.AddressRules.Add(addressRule);
@@ -2178,17 +2484,24 @@ public sealed partial class MainPage : Page, IDisposable
             return;
         }
 
-        string globalMode = string.IsNullOrWhiteSpace(config.GlobalSpatialAudioModeId) ? "off" : config.GlobalSpatialAudioModeId;
-        string globalProfile = config.GlobalActiveProfile ?? string.Empty;
-        string globalEndpointPath = GetGlobalEndpointPath();
-        string globalSignature = $"global|{globalMode}|{globalProfile}|{globalEndpointPath}|{config.GlobalVolumePercent?.ToString() ?? "<none>"}";
+        string globalSignature = GlobalSettingsSignature();
         if (!string.Equals(activeGlobalSettingsSignature, globalSignature, StringComparison.Ordinal))
         {
+            string globalMode = string.IsNullOrWhiteSpace(config.GlobalSpatialAudioModeId) ? "off" : config.GlobalSpatialAudioModeId;
+            string globalProfile = config.GlobalActiveProfile ?? string.Empty;
             if (RunGlobalProfileAsync(globalProfile, globalMode, "global-spatial"))
             {
                 activeGlobalSettingsSignature = globalSignature;
             }
         }
+    }
+
+    private string GlobalSettingsSignature()
+    {
+        string globalMode = string.IsNullOrWhiteSpace(config.GlobalSpatialAudioModeId) ? "off" : config.GlobalSpatialAudioModeId;
+        string globalProfile = config.GlobalActiveProfile ?? string.Empty;
+        string globalEndpointPath = GetGlobalEndpointPath();
+        return $"global|{globalMode}|{globalProfile}|{globalEndpointPath}|{config.GlobalVolumePercent?.ToString() ?? "<none>"}";
     }
 
     private static int RulePriority(ProcessSwitchItem item)
@@ -2278,6 +2591,7 @@ public sealed partial class MainPage : Page, IDisposable
             profile,
             spatialAudioModeId,
             apply: true,
+            equalizer: GetCustomEqualizerSettings(),
             endpointVolumePercent: VolumeSafety.Clamp(
                 item.GlobalVolumePercent ?? config.GlobalVolumePercent,
                 config.VolumeProtectionEnabled),
@@ -2294,6 +2608,7 @@ public sealed partial class MainPage : Page, IDisposable
             action.ActiveProfile,
             action.ActiveSpatialAudioModeId,
             apply: true,
+            equalizer: GetCustomEqualizerSettings(),
             endpointVolumePercent: VolumeSafety.Clamp(requestedVolume, config.VolumeProtectionEnabled),
             operationKey: operationKey);
     }
@@ -2306,6 +2621,7 @@ public sealed partial class MainPage : Page, IDisposable
             profile,
             spatialAudioModeId,
             apply: true,
+            equalizer: GetCustomEqualizerSettings(),
             endpointVolumePercent: VolumeSafety.Clamp(config.GlobalVolumePercent, config.VolumeProtectionEnabled),
             operationKey: operationKey);
     }
@@ -2316,6 +2632,7 @@ public sealed partial class MainPage : Page, IDisposable
         string profile,
         string spatialAudioModeId,
         bool apply,
+        DolbyEqualizerSettings? equalizer,
         float? endpointVolumePercent,
         string operationKey)
     {
@@ -2391,24 +2708,30 @@ public sealed partial class MainPage : Page, IDisposable
                 if (refreshDolbyAudioGraph)
                 {
                     Log($"[{operationName}] applying {spatialMode.Name} preset {profile} before audio graph refresh (APPLY)...");
-                    Log((await provider!.InvokeSetterAsync(endpointPath, profile, apply)).Trim());
+                    Log((await provider!.InvokeSetterAsync(endpointPath, profile, apply, equalizer)).Trim());
                     profileAppliedBeforeSpatialRefresh = true;
                 }
 
                 if (spatialMode.Id != "keep")
                 {
                     Log($"[{operationName}] requesting spatial format {spatialMode.Name} {(apply ? "(APPLY)" : "(DRY-RUN)")}...");
-                    Log((await AudioSystemState.SetDefaultSpatialAudioModeAsync(
+                    string spatialResult = await AudioSystemState.SetDefaultSpatialAudioModeAsync(
                         endpointPath,
                         spatialMode.Id,
                         apply,
-                        forceRefresh: refreshDolbyAudioGraph)).Trim());
+                        forceRefresh: refreshDolbyAudioGraph);
+                    Log(spatialResult.Trim());
+                    if (apply && !AudioSystemState.IsSpatialAudioResultConfirmed(spatialResult, spatialMode.Id))
+                    {
+                        Log($"[{operationName}] spatial format was not confirmed; skipped {spatialMode.Name} preset.");
+                        return;
+                    }
                 }
 
                 if (provider != null && !profileAppliedBeforeSpatialRefresh)
                 {
                     Log($"[{operationName}] applying {spatialMode.Name} preset {profile} {(apply ? "(APPLY)" : "(DRY-RUN)")}...");
-                    Log((await provider.InvokeSetterAsync(endpointPath, profile, apply)).Trim());
+                    Log((await provider.InvokeSetterAsync(endpointPath, profile, apply, equalizer)).Trim());
                 }
             }
             catch (Exception ex)
