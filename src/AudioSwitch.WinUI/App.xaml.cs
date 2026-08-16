@@ -25,9 +25,6 @@ public partial class App : Application
     public nint MainWindowHandle => window == null ? 0 : WindowNative.GetWindowHandle(window);
 
     [DllImport("user32.dll")]
-    private static extern bool ShowWindow(nint hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(nint hWnd);
 
     [DllImport("psapi.dll", SetLastError = true)]
@@ -134,7 +131,10 @@ public partial class App : Application
     private void HideWindow()
     {
         if (window == null) return;
-        ShowWindow(WindowNative.GetWindowHandle(window), 0);
+        // H.NotifyIcon enables Efficiency Mode when the tray icon is created.
+        // Use its paired extension so the process is put back into the same
+        // background state whenever the window is hidden.
+        window.Hide(enableEfficiencyMode: true);
         TrimHiddenWindowWorkingSet();
     }
 
@@ -155,8 +155,11 @@ public partial class App : Application
     private void ShowWindow()
     {
         if (window == null) return;
+        // ForceCreate enables Efficiency Mode. The extension disables it before
+        // restoring the window, which is required for tray -> window activation.
+        window.Show(disableEfficiencyMode: true);
         nint handle = WindowNative.GetWindowHandle(window);
-        ShowWindow(handle, 5);
+        if (handle == 0) return;
         SetForegroundWindow(handle);
     }
 

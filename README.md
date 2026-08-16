@@ -13,6 +13,8 @@ AudioSwitch 同时支持：
 - 本地 HTTP 状态接口与 Chrome 浏览器插件
 - 输出设备切换、开机启动和托盘后台运行
 
+![AudioSwitch 最新运行界面](assets/audio-switch-preview.png)
+
 ## 工作方式
 
 在“进程规则”中为应用配置目标输出设备和空间音频设置。AudioSwitch 检测到对应进程成为前台窗口后，就会应用该规则；没有匹配规则时，可以使用全局默认设置。
