@@ -6,14 +6,14 @@
     <SelfContained>false</SelfContained>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>DtsSetProfile</AssemblyName>
-    <RootNamespace>AudioSwitch.DtsSetProfile</RootNamespace>
+    <AssemblyName>CapxProbe</AssemblyName>
+    <RootNamespace>AudioSwitch.CapxProbe</RootNamespace>
     <OutputPath>bin\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\src\DtsSetProfile.cs" Link="DtsSetProfile.cs" />
+    <Compile Include="..\src\CapxProbe.cs" Link="CapxProbe.cs" />
   </ItemGroup>
 </Project>

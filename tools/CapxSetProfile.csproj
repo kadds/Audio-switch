@@ -8,6 +8,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>CapxSetProfile</AssemblyName>
     <RootNamespace>AudioSwitch.CapxSetProfile</RootNamespace>
+    <OutputPath>bin\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
   <ItemGroup>

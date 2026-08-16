@@ -3,12 +3,13 @@ name: .NET Desktop
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -39,12 +40,43 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Restore helper tools
+        shell: pwsh
+        run: |
+          $toolProjects = @(
+            'tools/CapxProbe.csproj',
+            'tools/CapxSetProfile.csproj',
+            'tools/DtsSetProfile.csproj'
+          )
+          foreach ($toolProject in $toolProjects) {
+            dotnet restore $toolProject `
+              --runtime $env:Runtime_Identifier `
+              -p:Platform=$env:Platform
+          }
+
+      - name: Build helper tools into tools/bin
+        shell: pwsh
+        run: |
+          $toolProjects = @(
+            'tools/CapxProbe.csproj',
+            'tools/CapxSetProfile.csproj',
+            'tools/DtsSetProfile.csproj'
+          )
+          foreach ($toolProject in $toolProjects) {
+            dotnet build $toolProject `
+              --configuration $env:Configuration `
+              --runtime $env:Runtime_Identifier `
+              -p:Platform=$env:Platform `
+              --no-restore
+          }
+
       - name: Restore
         shell: pwsh
         run: >-
           dotnet restore $env:Project_Path
           --runtime $env:Runtime_Identifier
           -p:Platform=$env:Platform
+          -p:PublishReadyToRun=false
 
       - name: Build WinUI app
         shell: pwsh
@@ -53,6 +85,7 @@ jobs:
           --configuration $env:Configuration
           --runtime $env:Runtime_Identifier
           -p:Platform=$env:Platform
+          -p:PublishReadyToRun=false
           --no-restore
 
       # The project copies the browser extension into this build directory
@@ -63,3 +96,24 @@ jobs:
           name: AudioSwitch-${{ matrix.configuration }}-${{ matrix.platform }}
           if-no-files-found: error
           path: src/AudioSwitch.WinUI/bin/${{ matrix.platform }}/${{ matrix.configuration }}/net10.0-windows10.0.26100.0/win-x64/
+
+      - name: Package release archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $outputPath = 'src/AudioSwitch.WinUI/bin/${{ matrix.platform }}/${{ matrix.configuration }}/net10.0-windows10.0.26100.0/win-x64'
+          $archivePath = "AudioSwitch-${{ github.ref_name }}-${{ matrix.platform }}.zip"
+          Compress-Archive -Path "$outputPath\*" -DestinationPath $archivePath -CompressionLevel Optimal
+          "Release_Archive=$archivePath" >> $env:GITHUB_ENV
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          "$env:Release_Archive"
+          --verify-tag
+          --title "AudioSwitch ${{ github.ref_name }}"
+          --generate-notes
