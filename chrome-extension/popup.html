@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AudioSwitch</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup">
+    <header>
+      <img src="icon.png" alt="AudioSwitch">
+      <div>
+        <h1>AudioSwitch</h1>
+        <p>Chrome 浏览器接入</p>
+      </div>
+    </header>
+    <label class="toggle-row">
+      <input id="enabled" type="checkbox">
+      <span>启用标签页状态投递</span>
+    </label>
+    <div id="endpoint" class="summary"></div>
+    <div class="buttons">
+      <button id="options" class="primary">完整设置</button>
+      <button id="test">测试</button>
+    </div>
+    <div id="status" role="status"></div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

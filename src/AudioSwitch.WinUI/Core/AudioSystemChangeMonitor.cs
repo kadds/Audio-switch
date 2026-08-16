@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using Windows.Foundation;
 using Windows.Media.Audio;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
 
 /// <summary>
 /// Bridges native Core Audio endpoint notifications and the WinRT spatial audio

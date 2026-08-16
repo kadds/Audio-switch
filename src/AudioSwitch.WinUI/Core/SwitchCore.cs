@@ -7,12 +7,130 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using System.Xml.Serialization;
+using Windows.ApplicationModel.AppService;
+using Windows.Foundation.Collections;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Media.Audio;
 using Windows.Media.Devices;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
+
+/// <summary>
+/// Serializes audio-control writes on one background consumer. WinRT calls are
+/// asynchronous, but the queue still guarantees that a later switch cannot
+/// overtake an earlier endpoint/profile update.
+/// </summary>
+public sealed class AudioApiQueue : IDisposable
+{
+    private interface IQueuedOperation
+    {
+        Task ExecuteAsync();
+    }
+
+    private sealed class QueuedOperation<T> : IQueuedOperation
+    {
+        private readonly Func<Task<T>> callback;
+        private readonly CancellationToken cancellationToken;
+        private readonly TaskCompletionSource<T> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public QueuedOperation(Func<Task<T>> callback, CancellationToken cancellationToken)
+        {
+            this.callback = callback;
+            this.cancellationToken = cancellationToken;
+        }
+        public Task<T> Result => completion.Task;
+
+        public async Task ExecuteAsync()
+        {
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                completion.TrySetResult(await callback().ConfigureAwait(false));
+            }
+            catch (OperationCanceledException ex)
+            {
+                completion.TrySetCanceled(ex.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        }
+    }
+
+    private readonly Channel<IQueuedOperation> channel = Channel.CreateUnbounded<IQueuedOperation>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false, AllowSynchronousContinuations = false });
+    private readonly CancellationTokenSource shutdown = new();
+    private readonly Task worker;
+    private int pendingCount;
+    private int disposed;
+
+    public AudioApiQueue()
+    {
+        worker = Task.Run(ProcessAsync);
+    }
+
+    public bool IsBusy => Volatile.Read(ref pendingCount) > 0;
+
+    public Task EnqueueAsync(Func<Task> callback, CancellationToken cancellationToken = default) => EnqueueAsync(async () =>
+    {
+        await callback().ConfigureAwait(false);
+        return true;
+    }, cancellationToken);
+
+    public Task<T> EnqueueAsync<T>(Func<Task<T>> callback, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref disposed) != 0) return Task.FromException<T>(new ObjectDisposedException(nameof(AudioApiQueue)));
+
+        var operation = new QueuedOperation<T>(callback, cancellationToken);
+        Interlocked.Increment(ref pendingCount);
+        if (!channel.Writer.TryWrite(operation))
+        {
+            Interlocked.Decrement(ref pendingCount);
+            return Task.FromException<T>(new InvalidOperationException("Audio API queue is closed."));
+        }
+
+        return operation.Result;
+    }
+
+    private async Task ProcessAsync()
+    {
+        try
+        {
+            await foreach (IQueuedOperation operation in channel.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))
+            {
+                try
+                {
+                    await operation.ExecuteAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref pendingCount);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        channel.Writer.TryComplete();
+        try
+        {
+            worker.GetAwaiter().GetResult();
+        }
+        catch
+        {
+        }
+        shutdown.Cancel();
+        shutdown.Dispose();
+    }
+}
 
 [Serializable]
 public sealed class ProcessSwitchItem
@@ -21,6 +139,11 @@ public sealed class ProcessSwitchItem
     public string Name { get; set; } = string.Empty;
     public string ExecutablePath { get; set; } = string.Empty;
     public ProcessMatchMode MatchMode { get; set; } = ProcessMatchMode.FullPath;
+    public string RemoteAddress { get; set; } = string.Empty;
+    public string RemoteTitle { get; set; } = string.Empty;
+    public string RemoteStatusText { get; set; } = string.Empty;
+    public string RemoteState { get; set; } = string.Empty;
+    public List<ProcessAddressRule> AddressRules { get; set; } = new();
     public bool ForegroundOnly { get; set; } = true;
     public int? PriorityOverride { get; set; }
     public string Description { get; set; } = string.Empty;
@@ -35,10 +158,28 @@ public sealed class ProcessSwitchItem
     public string DisplayDescription => Description;
 }
 
+[Serializable]
+public sealed class ProcessAddressRule
+{
+    public string RuleId { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = string.Empty;
+    public string Address { get; set; } = string.Empty;
+    public ProcessSwitchItem Action { get; set; } = new();
+
+    [XmlIgnore]
+    public string DisplayName => string.IsNullOrWhiteSpace(Name)
+        ? Localization.Value("ProcessProfile_AddressRuleDefaultName")
+        : Name;
+
+    [XmlIgnore]
+    public string DisplayAddress => string.IsNullOrWhiteSpace(Address) ? "URL is not configured" : Address;
+}
+
 public enum ProcessMatchMode
 {
     ProcessName,
-    FullPath
+    FullPath,
+    HttpState
 }
 
 [Serializable]
@@ -57,6 +198,11 @@ public sealed class SwitchConfig
     public bool StartMonitor { get; set; }
     public string OutputNotificationMode { get; set; } = "none";
     public string SpatialNotificationMode { get; set; } = "none";
+    public bool HttpListenerEnabled { get; set; }
+    public string HttpListenerBindAddress { get; set; } = "127.0.0.1";
+    public int HttpListenerPort { get; set; } = 8765;
+    public string HttpListenerPassword { get; set; } = string.Empty;
+    public bool BrowserIntegrationPromptDismissed { get; set; }
 
     public static SwitchConfig Load(string path)
     {
@@ -99,10 +245,10 @@ public static class VolumeSafety
 public static class AppPaths
 {
     public static string RepositoryRoot { get; } = FindRepositoryRoot();
-    public static string DataRoot { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DolbySwitch");
+    public static string DataRoot { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AudioSwitch");
     public static string WorkDirectory { get; } = Path.Combine(DataRoot, "work");
     public static string IconDirectory { get; } = Path.Combine(DataRoot, "icons");
-    public static string ConfigPath { get; } = Path.Combine(DataRoot, "dolby-switch-config.xml");
+    public static string ConfigPath { get; } = Path.Combine(DataRoot, "audio-switch-config.xml");
     public static string LogPath { get; } = Path.Combine(DataRoot, "audio-switch.log");
     public static string RotatedLogPath { get; } = LogPath + ".1";
 
@@ -114,15 +260,15 @@ public static class AppPaths
 
     private static string FindRepositoryRoot()
     {
-        string? current = Environment.GetEnvironmentVariable("DOLBY_SWITCH_PROJECT_ROOT");
-        var candidates = new List<string?> { current, AppContext.BaseDirectory, Environment.CurrentDirectory, @"G:\code\dolby-access-auto-switch" };
+        string? current = Environment.GetEnvironmentVariable("AUDIOSWITCH_PROJECT_ROOT");
+        var candidates = new List<string?> { current, AppContext.BaseDirectory, Environment.CurrentDirectory };
         foreach (string? candidate in candidates)
         {
             if (string.IsNullOrWhiteSpace(candidate)) continue;
             DirectoryInfo? directory = new DirectoryInfo(candidate);
             while (directory != null)
             {
-                if (File.Exists(Path.Combine(directory.FullName, "src", "CapxSetProfile.cs")) && File.Exists(Path.Combine(directory.FullName, "src", "DolbyAccessAutoSwitch.WinUI", "DolbyAccessAutoSwitch.WinUI.csproj"))) return directory.FullName;
+                if (File.Exists(Path.Combine(directory.FullName, "src", "CapxSetProfile.cs")) && File.Exists(Path.Combine(directory.FullName, "src", "AudioSwitch.WinUI", "AudioSwitch.WinUI.csproj"))) return directory.FullName;
                 directory = directory.Parent;
             }
         }
@@ -144,7 +290,10 @@ public sealed class ProcessChoice : INotifyPropertyChanged
     private static extern bool CloseHandle(nint handle);
 
     public string RuleId { get; set; } = string.Empty;
-    public string Name { get; init; } = string.Empty;
+    public string ParentRuleId { get; init; } = string.Empty;
+    public bool IsAddressRule { get; init; }
+    public string Name { get; set; } = string.Empty;
+    public string RuleAddress { get; set; } = string.Empty;
     public int Id { get; init; }
     public string Description { get; init; } = string.Empty;
     public string FilePath { get; init; } = string.Empty;
@@ -157,7 +306,10 @@ public sealed class ProcessChoice : INotifyPropertyChanged
         ? Localization.Value("Dialog_ProcessWindowed")
         : Localization.Value("Dialog_ProcessBackground");
     public string DisplayName => Name;
-    public string DisplayDescription => Description;
+    public string DisplayMarker => IsAddressRule ? "↳" : string.Empty;
+    public string DisplayDescription => IsAddressRule
+        ? (string.IsNullOrWhiteSpace(RuleAddress) ? Localization.Value("ProcessProfile_AddressRuleUrlMissing") : RuleAddress)
+        : Description;
     public BitmapImage? IconSource => string.IsNullOrWhiteSpace(IconPath) ? null : new BitmapImage(new Uri(IconPath, UriKind.Absolute));
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -168,6 +320,15 @@ public sealed class ProcessChoice : INotifyPropertyChanged
         IsRuleDisabled = disabled;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsRuleDisabled)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayOpacity)));
+    }
+
+    public void UpdateAddressRule(ProcessAddressRule rule)
+    {
+        if (!IsAddressRule) return;
+        Name = rule.DisplayName;
+        RuleAddress = rule.Address;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayName)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayDescription)));
     }
 
     public override string ToString() => $"[{Id}] {Name}{(string.IsNullOrWhiteSpace(Description) ? string.Empty : " - " + Description)}";
@@ -267,6 +428,15 @@ public sealed class ProcessChoice : INotifyPropertyChanged
             IconPath = iconPath,
         };
     }
+
+    public static ProcessChoice FromAddressRule(ProcessSwitchItem parent, ProcessAddressRule rule) => new()
+    {
+        Name = rule.DisplayName,
+        RuleId = rule.RuleId,
+        ParentRuleId = parent.RuleId,
+        IsAddressRule = true,
+        RuleAddress = rule.Address
+    };
 
     private static string SaveIcon(string executablePath)
     {
@@ -443,7 +613,7 @@ public static class SpatialAudioModeCatalog
         new SpatialAudioOption { Id = "off", NameKey = "Spatial_Off.Name", AvailabilityKey = "Spatial_Off.Availability", FormatSubtype = string.Empty },
         new SpatialAudioOption { Id = "windows-sonic", NameKey = "Spatial_WindowsSonic.Name", AvailabilityKey = "Spatial_WindowsSonic.Availability", FormatSubtype = SpatialAudioFormatSubtype.WindowsSonic },
         new SpatialAudioOption { Id = "dolby-atmos-headphones", NameKey = "Spatial_Dolby.Name", AudioProfileProviderId = "dolby-capx", AvailabilityKey = "Spatial_Dolby.Availability", FormatSubtype = SpatialAudioFormatSubtype.DolbyAtmosForHeadphones },
-        new SpatialAudioOption { Id = "dts-headphone-x", NameKey = "Spatial_Dts.Name", AudioProfileProviderId = "dts-capx", AvailabilityKey = "Spatial_Dts.Availability", FormatSubtype = SpatialAudioFormatSubtype.DTSHeadphoneX }
+        new SpatialAudioOption { Id = "dts-headphone-x", NameKey = "Spatial_Dts.Name", AudioProfileProviderId = "dts-sad", AvailabilityKey = "Spatial_Dts.Availability", FormatSubtype = SpatialAudioFormatSubtype.DTSHeadphoneX }
     };
 
     public static IReadOnlyList<SpatialAudioOption> ProcessOptions { get; } = new[]
@@ -533,7 +703,11 @@ public static class AudioSystemState
         };
     }
 
-    public static async Task<string> SetDefaultSpatialAudioModeAsync(string endpointPath, string modeId, bool apply)
+    public static async Task<string> SetDefaultSpatialAudioModeAsync(
+        string endpointPath,
+        string modeId,
+        bool apply,
+        bool forceRefresh = false)
     {
         SpatialAudioOption option = SpatialAudioModeCatalog.FindById(modeId);
         if (option.Id == "keep") return "Spatial audio format unchanged";
@@ -544,9 +718,37 @@ public static class AudioSystemState
             SpatialAudioDeviceConfiguration configuration = SpatialAudioDeviceConfiguration.GetForDeviceId(
                 AudioEndpointChoice.NormalizeDeviceInterfacePath(endpointPath));
             string currentModeId = SpatialAudioModeCatalog.FindByFormat(configuration.DefaultSpatialAudioFormat ?? string.Empty).Id;
-            if (string.Equals(currentModeId, option.Id, StringComparison.OrdinalIgnoreCase))
+            bool sameMode = string.Equals(currentModeId, option.Id, StringComparison.OrdinalIgnoreCase);
+            if (sameMode && !forceRefresh)
             {
                 return $"C# spatial format unchanged: {option.Name}; switch API skipped";
+            }
+
+            bool refreshed = false;
+            if (sameMode && forceRefresh && option.Id != "off")
+            {
+                // Dolby can accept a new AppService profile while the current
+                // Spatial Audio stream keeps the old DSP graph. Recreate that
+                // graph by briefly clearing and restoring the same format.
+                SetDefaultSpatialAudioFormatResult offResult = await SetSpatialAudioOffAsync(configuration);
+                string offDefaultFormat = configuration.DefaultSpatialAudioFormat ?? string.Empty;
+                string offActiveFormat = configuration.ActiveSpatialAudioFormat ?? string.Empty;
+                for (int attempt = 0; attempt < 3 && !SpatialFormatReadbackMatches(offDefaultFormat, "off"); attempt++)
+                {
+                    await Task.Delay(100);
+                    offDefaultFormat = configuration.DefaultSpatialAudioFormat ?? string.Empty;
+                    offActiveFormat = configuration.ActiveSpatialAudioFormat ?? string.Empty;
+                }
+
+                if (!SpatialFormatReadbackMatches(offDefaultFormat, "off"))
+                {
+                    string offDefault = SpatialAudioModeCatalog.FindByFormat(offDefaultFormat).Name;
+                    string offActive = SpatialAudioModeCatalog.FindByFormat(offActiveFormat).Name;
+                    return $"C# spatial format refresh failed before reactivation: {offResult.Status}; default={offDefault}; active={offActive}";
+                }
+
+                refreshed = true;
+                await Task.Delay(150);
             }
 
             // Off has no public SpatialAudioFormatSubtype. Windows stores it as
@@ -582,7 +784,9 @@ public static class AudioSystemState
                 return $"C# spatial format {option.Name} not confirmed after {result.Status}; default={readbackDefault}; active={readbackActive}";
             }
 
-            return $"C# spatial format {option.Name}: {result.Status}; default={readbackDefault}; active={readbackActive}";
+            return refreshed
+                ? $"C# spatial format {option.Name} refreshed: off -> {result.Status}; default={readbackDefault}; active={readbackActive}"
+                : $"C# spatial format {option.Name}: {result.Status}; default={readbackDefault}; active={readbackActive}";
         }
         catch (Exception ex)
         {
@@ -766,8 +970,8 @@ public interface IAudioProfileProvider
     string DefaultActiveProfile { get; }
     IReadOnlyList<string> SupportedProfiles { get; }
     bool SupportsProfile(string profile);
-    bool TryProbe(AudioEndpointChoice endpoint);
-    string InvokeSetter(string endpointPath, string profile, bool apply);
+    Task<bool> TryProbeAsync(AudioEndpointChoice endpoint);
+    Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply);
 }
 
 public static class AudioProfileProviderRegistry
@@ -775,7 +979,7 @@ public static class AudioProfileProviderRegistry
     public static IReadOnlyList<IAudioProfileProvider> Providers { get; } = new[]
     {
         (IAudioProfileProvider)new DolbyCapxProfileProvider(),
-        new DtsCapxProfileProvider()
+        new DtsSoundUnboundProfileProvider()
     };
 
     public static IAudioProfileProvider Find(string id) => Providers.FirstOrDefault(provider => string.Equals(provider.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Providers[0];
@@ -788,7 +992,7 @@ public static class AudioProfileProviderRegistry
             : Providers.FirstOrDefault(provider => string.Equals(provider.Id, option.AudioProfileProviderId, StringComparison.OrdinalIgnoreCase));
     }
 
-    public static void ProbeAll(AudioEndpointChoice endpoint)
+    public static async Task ProbeAllAsync(AudioEndpointChoice endpoint)
     {
         endpoint.Matches.Clear();
         endpoint.ProbeStatus = "Checking providers...";
@@ -796,7 +1000,10 @@ public static class AudioProfileProviderRegistry
         {
             try
             {
-                if (provider.TryProbe(endpoint)) endpoint.Matches.Add(new AudioProfileMatch { ProviderId = provider.Id, ProviderName = provider.DisplayName, CurrentProfile = endpoint.Profile });
+                if (await provider.TryProbeAsync(endpoint).ConfigureAwait(false))
+                {
+                    endpoint.Matches.Add(new AudioProfileMatch { ProviderId = provider.Id, ProviderName = provider.DisplayName, CurrentProfile = endpoint.Profile });
+                }
             }
             catch (Exception ex)
             {
@@ -813,217 +1020,157 @@ public sealed class DolbyCapxProfileProvider : IAudioProfileProvider
 {
     private static readonly string[] Profiles = { "Dynamic", "Game", "Movie", "Music", "Voice", "Custom1", "Custom2", "Custom3" };
     private const string DolbyAccessPackageFamilyName = "DolbyLaboratories.DolbyAccess_rz1tebttyb220";
-    private const string DolbyAccessAppId = "App";
-    private const uint DesktopPackageActivationOptions = 4 | 16 | 32;
+    private const string DolbyAccessAppServiceName = "com.DolbyLaboratories.DolbyAccess.";
+    private const string DolbyAtmosForHeadphonesCodec = "{8F3BBD02-6BBE-4B60-9F8B-406837CE466F}";
 
     public string Id => "dolby-capx";
-    public string DisplayName => "Dolby Access / CAPX";
+    public string DisplayName => "Dolby Access / AppService";
     public string DefaultActiveProfile => "Game";
     public IReadOnlyList<string> SupportedProfiles => Profiles;
 
     public bool SupportsProfile(string profile) => Profiles.Contains(profile, StringComparer.OrdinalIgnoreCase);
 
-    public bool TryProbe(AudioEndpointChoice endpoint)
+    public async Task<bool> TryProbeAsync(AudioEndpointChoice endpoint)
     {
-        endpoint.ProbeStatus = endpoint.HasProfile
-            ? $"C# registry CAPX / {endpoint.Profile}"
-            : "No Dolby CAPX registry profile";
-        return endpoint.HasProfile;
-    }
-
-    public string InvokeSetter(string endpointPath, string profile, bool apply)
-    {
-        string endpointId = ExtractEndpointId(endpointPath);
-        const string renderRoot = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Render";
-        const string profileSet = "{45da5c30-2837-4ac4-b1e2-50acc3865974}";
-        const string profileValue = "{e36464a1-2f4b-440b-a776-8b32b26a7f01},1";
-        string keyPath = $"{renderRoot}\\{endpointId}\\FxProperties\\{profileSet}\\User";
-        int profileIndex = ProfileIndex(profile);
-        if (profileIndex < 0) throw new ArgumentException($"Unsupported spatial audio preset: {profile}", nameof(profile));
-
-        // The registry record is only used to read the current preset. Dolby's
-        // live state is changed by the CAPX helper below; opening HKLM writable
-        // here causes Access Denied under a normal desktop user.
-        using RegistryKey? key = Registry.LocalMachine.OpenSubKey(keyPath, writable: false);
-        byte[]? raw = key?.GetValue(profileValue) as byte[];
-        if (raw is not { Length: >= 5 }) throw new InvalidOperationException("Dolby CAPX registry profile record was not found.");
-        int offset = raw.Length - 5;
-        if (raw[offset] != 1) throw new InvalidOperationException("Unexpected Dolby CAPX profile record format.");
-        string current = AudioEndpointChoice.DecodeProfile(raw) ?? "unknown";
-        if (!apply) return $"C# dry-run: registry CAPX profile {current} -> {profile}";
-
-        // The FxProperties record is useful for probing, but writing it directly
-        // is not the Dolby setter. Dolby Access keeps the live CAPX state behind
-        // CapxComponent.PropertyStoreProxy, so a registry-only write can report
-        // success while Dolby Access continues using the old preset.
-        string result = InvokeCapxSetter(endpointPath, profile, profileIndex);
-        return $"C# CAPX profile {current} -> {profile}: {result}";
-    }
-
-    private static string InvokeCapxSetter(string endpointPath, string profile, int profileIndex)
-    {
-        string token = Guid.NewGuid().ToString("N");
-        string outputFile = Path.Combine(Path.GetTempPath(), $"AudioSwitch-Capx-{token}.json");
-        string helperPath = Path.Combine(AppContext.BaseDirectory, "tools", "bin", "CapxSetProfile.exe");
-        string payload = $"01{profileIndex:X2}000000";
-
-        if (!File.Exists(helperPath))
-        {
-            throw new FileNotFoundException("The packaged C# CAPX helper is missing.", helperPath);
-        }
-
         try
         {
-            string arguments = string.Join(" ",
-                QuoteCommandLineArgument(endpointPath),
-                QuoteCommandLineArgument(payload),
-                QuoteCommandLineArgument(outputFile),
-                QuoteCommandLineArgument("--apply"));
+            string? profile = await ReadRuntimeProfileAsync(endpoint.EndpointPath).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(profile) || !SupportsProfile(profile)) return false;
 
-            _ = DesktopPackageActivator.Start(
-                DolbyAccessPackageFamilyName + "!" + DolbyAccessAppId,
-                helperPath,
-                arguments);
-
-            WaitForHelper(outputFile);
-            if (!File.Exists(outputFile)) throw new IOException("The C# CAPX helper did not produce a result.");
-
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(outputFile));
-            JsonElement root = document.RootElement;
-            if (root.TryGetProperty("errorType", out JsonElement errorType) || root.TryGetProperty("error", out _))
-            {
-                string message = root.TryGetProperty("message", out JsonElement errorMessage)
-                    ? errorMessage.GetString() ?? "unknown error"
-                    : root.ToString();
-                throw new InvalidOperationException($"CAPX helper failed ({errorType.GetString() ?? "error"}): {message}");
-            }
-
-            string setResult = root.TryGetProperty("set", out JsonElement setElement) &&
-                               setElement.TryGetProperty("hr", out JsonElement setHr)
-                ? setHr.GetString() ?? string.Empty
-                : string.Empty;
-            string expectedHex = payload;
-            string afterHex = root.TryGetProperty("after", out JsonElement afterElement) &&
-                              afterElement.TryGetProperty("hex", out JsonElement afterValue)
-                ? afterValue.GetString() ?? string.Empty
-                : string.Empty;
-
-            if (!string.Equals(setResult, "0x00000000", StringComparison.OrdinalIgnoreCase))
-            {
-                return $"SetAtmosProfile failed ({setResult}); live preset was not changed";
-            }
-
-            if (!string.Equals(afterHex, expectedHex, StringComparison.OrdinalIgnoreCase))
-            {
-                return $"SetAtmosProfile returned success but readback was {afterHex}; expected {expectedHex}";
-            }
-
-            return $"SetAtmosProfile succeeded; CAPX readback={DecodeProfileHex(afterHex)}";
+            endpoint.Profile = profile;
+            endpoint.ProbeStatus = $"Dolby Access AppService / {profile}";
+            return true;
         }
-        finally
+        catch
         {
-            TryDeleteTempFile(outputFile);
+            // Dolby Access can be installed without exposing this endpoint to
+            // the AppService. That is a normal non-match.
+            return false;
         }
     }
 
-    private static void WaitForHelper(string outputFile)
+    public async Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply)
     {
-        for (int attempt = 0; attempt < 150; attempt++)
+        if (!SupportsProfile(profile)) throw new ArgumentException($"Unsupported spatial audio preset: {profile}", nameof(profile));
+        if (!apply) return $"dry-run: Dolby Access AppService profile -> {profile}";
+
+        string actual = await ApplyRuntimeProfileAsync(endpointPath, profile).ConfigureAwait(false);
+        return $"Dolby Access AppService profile {profile} applied; runtime readback={actual}";
+    }
+
+    private static async Task<string> ApplyRuntimeProfileAsync(string endpointPath, string profile)
+    {
+        using AppServiceConnection connection = await OpenDolbyAccessAppServiceAsync();
+        string profileParameters = BuildProfileParameters(profile);
+
+        await SendDolbyRequestAsync(connection, CreateRequest("SetProfile", endpointPath, profileParameters));
+        await SendDolbyRequestAsync(connection, CreateRequest("SyncProfile", endpointPath, profileParameters));
+        AppServiceResponse response = await SendDolbyRequestAsync(connection, CreateRequest("GetProfile", endpointPath));
+        string actual = ReadProfileType(response);
+        if (!string.Equals(actual, profile, StringComparison.OrdinalIgnoreCase))
         {
-            if (File.Exists(outputFile) && new FileInfo(outputFile).Length > 0) return;
-            Thread.Sleep(100);
+            throw new InvalidOperationException($"Dolby Access AppService returned profile '{actual}', expected '{profile}'.");
         }
 
-        throw new TimeoutException("The C# CAPX helper timed out.");
+        return actual;
     }
 
-    private static string QuoteCommandLineArgument(string value) =>
-        "\"" + value.Replace("\"", "\\\"") + "\"";
-
-    private static void TryDeleteTempFile(string path)
+    private static async Task<string?> ReadRuntimeProfileAsync(string endpointPath)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
+        using AppServiceConnection connection = await OpenDolbyAccessAppServiceAsync();
+        AppServiceResponse response = await SendDolbyRequestAsync(connection, CreateRequest("GetProfile", endpointPath));
+        return ReadProfileType(response);
     }
 
-    private static string DecodeProfileHex(string hex)
+    private static async Task<AppServiceConnection> OpenDolbyAccessAppServiceAsync()
     {
-        if (hex.Length != 10 || !byte.TryParse(hex.Substring(2, 2), System.Globalization.NumberStyles.HexNumber, null, out byte index))
+        var connection = new AppServiceConnection
         {
-            return "unknown";
-        }
+            PackageFamilyName = DolbyAccessPackageFamilyName,
+            AppServiceName = DolbyAccessAppServiceName
+        };
 
-        return index < Profiles.Length ? Profiles[index] : $"Unknown({index})";
-    }
-
-    private static int ProfileIndex(string profile)
-    {
-        return Array.FindIndex(Profiles, value => string.Equals(value, profile, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static string ExtractEndpointId(string endpointPath)
-    {
-        int start = endpointPath.IndexOf("}.{", StringComparison.Ordinal);
-        int end = endpointPath.IndexOf("}#{", start + 3, StringComparison.Ordinal);
-        if (start < 0 || end < 0) throw new ArgumentException("Invalid audio endpoint path.", nameof(endpointPath));
-        return endpointPath.Substring(start + 2, end - start - 1);
-    }
-
-    private static class DesktopPackageActivator
-    {
-        [ComImport]
-        [Guid("168EB462-775F-42AE-9111-D714B2306C2E")]
-        private sealed class ActivatorClass
+        AppServiceConnectionStatus status = await connection.OpenAsync();
+        if (status != AppServiceConnectionStatus.Success)
         {
+            connection.Dispose();
+            throw new InvalidOperationException($"Dolby Access AppService could not be opened: {status}");
         }
 
-        [ComImport]
-        [Guid("F158268A-D5A5-45CE-99CF-00D6C3F3FC0A")]
-        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IDesktopAppXActivator
-        {
-            void Activate(
-                [MarshalAs(UnmanagedType.LPWStr)] string applicationUserModelId,
-                [MarshalAs(UnmanagedType.LPWStr)] string executable,
-                [MarshalAs(UnmanagedType.LPWStr)] string arguments,
-                out uint processId);
-
-            void ActivateWithOptions(
-                [MarshalAs(UnmanagedType.LPWStr)] string applicationUserModelId,
-                [MarshalAs(UnmanagedType.LPWStr)] string executable,
-                [MarshalAs(UnmanagedType.LPWStr)] string arguments,
-                uint options,
-                uint parentProcessId,
-                out uint processId);
-        }
-
-        public static uint Start(string applicationUserModelId, string executable, string arguments)
-        {
-            object activatorObject = new ActivatorClass();
-            IDesktopAppXActivator activator = (IDesktopAppXActivator)activatorObject;
-            activator.ActivateWithOptions(
-                applicationUserModelId,
-                executable,
-                arguments,
-                DesktopPackageActivationOptions,
-                0,
-                out uint processId);
-            return processId;
-        }
+        return connection;
     }
+
+    private static async Task<AppServiceResponse> SendDolbyRequestAsync(AppServiceConnection connection, ValueSet request)
+    {
+        AppServiceResponse response = await connection.SendMessageAsync(request);
+        if (response.Status != AppServiceResponseStatus.Success)
+        {
+            throw new InvalidOperationException($"Dolby Access AppService request failed: {response.Status}");
+        }
+
+        if (response.Message.TryGetValue("ERROR", out object? error))
+        {
+            throw new InvalidOperationException($"Dolby Access AppService rejected the request: {error}");
+        }
+
+        return response;
+    }
+
+    private static ValueSet CreateRequest(string command, string endpointPath, string? profileParameters = null)
+    {
+        var request = new ValueSet
+        {
+            ["Command"] = command,
+            ["DeviceID"] = endpointPath,
+            ["MediaCodecName"] = DolbyAtmosForHeadphonesCodec
+        };
+        if (profileParameters != null) request["ProfileParameters"] = profileParameters;
+        return request;
+    }
+
+    private static string ReadProfileType(AppServiceResponse response)
+    {
+        if (!response.Message.TryGetValue("ProfileParameters", out object? value) || value is not string json)
+        {
+            throw new InvalidOperationException("Dolby Access AppService did not return ProfileParameters.");
+        }
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("Type", out JsonElement type)
+            ? type.GetString() ?? string.Empty
+            : string.Empty;
+    }
+
+    private static string BuildProfileParameters(string profile)
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["IntelligentEqualizerType"] = "Detailed",
+            ["CustomEqualizerSettings"] = null,
+            ["IsPerformanceMode"] = null,
+            ["IsSurroundVirtualizerEnabled"] = null,
+            ["IsDialogueEnhancerEnabled"] = null,
+            ["IsVolumeLevelerEnabled"] = null,
+            ["GamingSubProfile"] = null,
+            ["Type"] = profile
+        };
+        return JsonSerializer.Serialize(parameters);
+    }
+
 }
 
-public sealed class DtsCapxProfileProvider : IAudioProfileProvider
+public sealed class DtsSoundUnboundProfileProvider : IAudioProfileProvider
 {
     private const string DtsPackageFamilyName = "DTSInc.DTSSoundUnbound_t5j2fzbtdg37r";
     private const string DtsAppId = "App";
     private const uint DesktopPackageActivationOptions = 4 | 16 | 32;
-    private static readonly IReadOnlyDictionary<string, string> ProfileFiles =
+    private static readonly IReadOnlyDictionary<string, string> ProfileBlobs =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            // These are the partner SAD profiles shipped by the installed DTS
-            // Sound Unbound package. Keep the user-facing names aligned with
-            // the package resources instead of inventing Natural/Spacious
-            // aliases that lose the Gaming/Movies distinction.
+            // These labels are read from the installed Sound Unbound resource
+            // catalog: generic Headphone:X plus the partner SAD catalog.
+            ["Balanced"] = "02-SPAC-HqHeightAndHgNf_SD1_Hp_Normal_v4_RC2.SPAC.crypt",
+            ["Spacious"] = "04-SPAC-HqHeightAndHgNf_SD2_Hp_Normal_v4_RC2.SPAC.crypt",
             ["Gaming: Balanced"] = "2403-GamingBalanced.SPAC.crypt",
             ["Gaming: Neutral"] = "2403-GamingNeutral.SPAC.crypt",
             ["Gaming: Spacious"] = "2403-GamingSpacious.SPAC.crypt",
@@ -1032,69 +1179,66 @@ public sealed class DtsCapxProfileProvider : IAudioProfileProvider
             ["Movies: Spacious"] = "2403-MoviesSpacious.SPAC.crypt"
         };
 
-    public string Id => "dts-capx";
-    public string DisplayName => "DTS Sound Unbound / CAPX";
-    public string DefaultActiveProfile => "Gaming: Neutral";
-    public IReadOnlyList<string> SupportedProfiles =>
-        ProfileFiles.Keys.Where(profile => DtsResourceCatalog.TryFindProfileFile(ProfileFiles[profile], out _)).ToArray();
+    public string Id => "dts-sad";
+    public string DisplayName => "DTS Sound Unbound / Headphone:X";
+    public string DefaultActiveProfile => "Balanced";
+    public IReadOnlyList<string> SupportedProfiles => ProfileBlobs.Keys.ToArray();
 
     public bool SupportsProfile(string profile) =>
-        ProfileFiles.ContainsKey(profile) && DtsResourceCatalog.TryFindProfileFile(ProfileFiles[profile], out _);
+        ProfileBlobs.ContainsKey(profile);
 
-    public bool TryProbe(AudioEndpointChoice endpoint)
+    public async Task<bool> TryProbeAsync(AudioEndpointChoice endpoint)
     {
-        if (!DtsResourceCatalog.IsInstalled || !File.Exists(HelperPath)) return false;
+        if (!File.Exists(HelperPath)) return false;
 
         try
         {
-            DtsHelperResult result = InvokeHelper(endpoint.EndpointPath, "-", apply: false);
+            DtsHelperResult result = await Task.Run(() => InvokeHelper(endpoint.EndpointPath, "-", apply: false)).ConfigureAwait(false);
             if (!result.Supported) return false;
-            endpoint.ProbeStatus = "C# DTS CAPX / supported";
+            endpoint.Profile = result.CurrentProfile ?? string.Empty;
+            endpoint.ProbeStatus = string.IsNullOrWhiteSpace(result.CurrentProfile)
+                ? "C# DTS Sound Unbound / Headphone:X"
+                : $"C# DTS Sound Unbound / Headphone:X / {result.CurrentProfile}";
             return true;
         }
         catch
         {
-            // DTS can be installed without owning the current endpoint. That is
-            // a normal non-match, not a probe failure that should pollute the UI.
+            // DTS can be installed without exposing a generic HPX runtime entry
+            // for the current endpoint. That is a normal non-match.
             return false;
         }
     }
 
-    public string InvokeSetter(string endpointPath, string profile, bool apply)
+    public async Task<string> InvokeSetterAsync(string endpointPath, string profile, bool apply)
     {
-        if (!ProfileFiles.TryGetValue(profile, out string? fileName))
+        if (!ProfileBlobs.TryGetValue(profile, out string? blobName))
         {
             throw new ArgumentException($"Unsupported DTS spatial audio preset: {profile}", nameof(profile));
         }
 
-        if (!DtsResourceCatalog.TryFindProfileFile(fileName, out string? profilePath))
-        {
-            throw new FileNotFoundException($"DTS Sound Unbound profile '{profile}' is not installed.", fileName);
-        }
-
         if (!apply)
         {
-            return $"C# dry-run: DTS SAD profile -> {profile} ({Path.GetFileName(profilePath)})";
+            return $"C# dry-run: DTS Sound Unbound Headphone:X -> {profile} ({blobName})";
         }
 
-        DtsHelperResult result = InvokeHelper(endpointPath, profilePath, apply: true, force: true);
-        if (!result.Supported && !result.Forced)
+        DtsHelperResult result = await Task.Run(() => InvokeHelper(endpointPath, profile, apply: true)).ConfigureAwait(false);
+        if (!result.Supported)
         {
-            return "DTS CAPX does not support this endpoint; live profile was not changed";
+            return "DTS Sound Unbound does not expose generic Headphone:X runtime state for this endpoint; profile was not changed";
         }
 
-        if (!result.SadWrite)
+        if (!result.Applied)
         {
-            return $"DTS SAD profile {profile} was rejected by the DTS provider; live profile was not changed";
+            return $"DTS Sound Unbound profile {profile} was not confirmed by runtime readback" +
+                   (string.IsNullOrWhiteSpace(result.Reason) ? string.Empty : $": {result.Reason}");
         }
 
-        string forced = result.Forced ? "; forced despite IsCAPxSupported=false" : string.Empty;
-        return $"DTS SAD profile {profile} write succeeded ({result.BlobBytes} bytes; transaction={result.Transaction}{forced})";
+        return $"DTS Sound Unbound Headphone:X profile {profile} applied; runtime readback={result.Blob ?? blobName}";
     }
 
     private static string HelperPath => Path.Combine(AppContext.BaseDirectory, "tools", "bin", "DtsSetProfile.exe");
 
-    private static DtsHelperResult InvokeHelper(string endpointPath, string profilePath, bool apply, bool force = false)
+    private static DtsHelperResult InvokeHelper(string endpointPath, string profile, bool apply)
     {
         string token = Guid.NewGuid().ToString("N");
         string outputFile = Path.Combine(Path.GetTempPath(), $"AudioSwitch-Dts-{token}.json");
@@ -1102,10 +1246,9 @@ public sealed class DtsCapxProfileProvider : IAudioProfileProvider
         {
             string arguments = string.Join(" ",
                 QuoteCommandLineArgument(endpointPath),
-                QuoteCommandLineArgument(profilePath),
+                QuoteCommandLineArgument(profile),
                 QuoteCommandLineArgument(outputFile),
-                apply ? QuoteCommandLineArgument("--apply") : string.Empty,
-                force ? QuoteCommandLineArgument("--force") : string.Empty);
+                apply ? QuoteCommandLineArgument("--apply") : string.Empty);
 
             _ = DesktopPackageActivator.Start(
                 DtsPackageFamilyName + "!" + DtsAppId,
@@ -1117,20 +1260,25 @@ public sealed class DtsCapxProfileProvider : IAudioProfileProvider
 
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(outputFile));
             JsonElement root = document.RootElement;
-            if (root.TryGetProperty("errorType", out JsonElement errorType) || root.TryGetProperty("error", out _))
+            bool hasErrorType = root.TryGetProperty("errorType", out JsonElement errorType);
+            bool hasError = root.TryGetProperty("error", out _);
+            if (hasErrorType || hasError)
             {
                 string message = root.TryGetProperty("message", out JsonElement errorMessage)
                     ? errorMessage.GetString() ?? "unknown error"
                     : root.ToString();
-                throw new InvalidOperationException($"DTS helper failed ({errorType.GetString() ?? "error"}): {message}");
+                string type = errorType.ValueKind == JsonValueKind.String ? errorType.GetString() ?? "error" : "error";
+                throw new InvalidOperationException($"DTS helper failed ({type}): {message}");
             }
 
             return new DtsHelperResult(
                 root.TryGetProperty("supported", out JsonElement supported) && supported.GetBoolean(),
-                root.TryGetProperty("forced", out JsonElement forced) && forced.GetBoolean(),
-                root.TryGetProperty("sadWrite", out JsonElement sadWrite) && sadWrite.GetBoolean(),
-                root.TryGetProperty("transaction", out JsonElement transaction) && transaction.GetBoolean(),
-                root.TryGetProperty("blobBytes", out JsonElement blobBytes) ? blobBytes.GetInt32() : 0);
+                root.TryGetProperty("applied", out JsonElement applied) && applied.GetBoolean(),
+                ReadOptionalString(root, "currentProfile"),
+                ReadOptionalString(root, "currentBlob"),
+                ReadOptionalString(root, "profile"),
+                ReadOptionalString(root, "blob"),
+                ReadOptionalString(root, "reason"));
         }
         finally
         {
@@ -1140,7 +1288,7 @@ public sealed class DtsCapxProfileProvider : IAudioProfileProvider
 
     private static void WaitForHelper(string outputFile)
     {
-        for (int attempt = 0; attempt < 150; attempt++)
+        for (int attempt = 0; attempt < 300; attempt++)
         {
             if (File.Exists(outputFile) && new FileInfo(outputFile).Length > 0) return;
             Thread.Sleep(100);
@@ -1152,42 +1300,21 @@ public sealed class DtsCapxProfileProvider : IAudioProfileProvider
     private static string QuoteCommandLineArgument(string value) =>
         "\"" + value.Replace("\"", "\\\"") + "\"";
 
-    private sealed record DtsHelperResult(bool Supported, bool Forced, bool SadWrite, bool Transaction, int BlobBytes);
-
-    private static class DtsResourceCatalog
+    private static string? ReadOptionalString(JsonElement root, string propertyName)
     {
-        private static readonly Lazy<string?> PackageRoot = new(FindPackageRoot);
-
-        public static bool IsInstalled => PackageRoot.Value != null;
-
-        public static bool TryFindProfileFile(string fileName, out string path)
-        {
-            string? root = PackageRoot.Value;
-            path = root == null ? string.Empty : Path.Combine(root, "Data", "SAD", fileName);
-            return !string.IsNullOrWhiteSpace(path) && File.Exists(path);
-        }
-
-        private static string? FindPackageRoot()
-        {
-            string windowsApps = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "WindowsApps");
-            try
-            {
-                return Directory.EnumerateDirectories(
-                        windowsApps,
-                        "DTSInc.DTSSoundUnbound_*__t5j2fzbtdg37r",
-                        SearchOption.TopDirectoryOnly)
-                    .Where(directory => Directory.Exists(Path.Combine(directory, "Data", "SAD")))
-                    .OrderByDescending(directory => directory, StringComparer.OrdinalIgnoreCase)
-                    .FirstOrDefault();
-            }
-            catch
-            {
-                return null;
-            }
-        }
+        return root.TryGetProperty(propertyName, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
     }
+
+    private sealed record DtsHelperResult(
+        bool Supported,
+        bool Applied,
+        string? CurrentProfile,
+        string? CurrentBlob,
+        string? Profile,
+        string? Blob,
+        string? Reason);
 
     private static class DesktopPackageActivator
     {

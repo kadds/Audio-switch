@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <UserControl
-    x:Class="DolbyAccessAutoSwitch_WinUI.ProcessProfileView"
+    x:Class="AudioSwitch_WinUI.ProcessProfileView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -24,6 +24,7 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Border Style="{StaticResource CardBorderStyle}" Padding="12">
@@ -33,10 +34,23 @@
                         <TextBlock x:Name="RuleMatchingTextBlock" Text="Rule matching" Style="{StaticResource SubtitleTextBlockStyle}" />
                     </StackPanel>
                     <TextBlock x:Name="RuleHintTextBlock" Text="Choose how this rule identifies the process." Opacity="0.68" TextWrapping="Wrap" />
+                    <StackPanel x:Name="AddressRuleMatchPanel" Visibility="Collapsed" Spacing="6" Margin="0,2,0,0">
+                        <TextBlock x:Name="AddressRuleMatchHintTextBlock" Text="This child rule matches the address reported by the browser integration." Opacity="0.68" TextWrapping="Wrap" />
+                        <TextBox x:Name="AddressRuleNameTextBox" Header="Rule name" TextChanged="AddressRuleField_TextChanged" />
+                        <TextBox x:Name="AddressRuleAddressTextBox" Header="URL contains" TextChanged="AddressRuleField_TextChanged" />
+                    </StackPanel>
                     <ComboBox x:Name="MatchModeComboBox" SelectionChanged="MatchModeComboBox_SelectionChanged">
                         <ComboBoxItem Tag="ProcessName" Content="Process name" />
                         <ComboBoxItem Tag="FullPath" Content="Full path" />
+                        <ComboBoxItem Tag="HttpState" Content="HTTP state" />
                     </ComboBox>
+                    <StackPanel x:Name="HttpStateMatchPanel" Visibility="Collapsed" Spacing="6" Margin="0,2,0,0">
+                        <TextBlock x:Name="HttpStateMatchHintTextBlock" Text="Match messages received from the local HTTP listener. Empty fields are wildcards." Opacity="0.68" TextWrapping="Wrap" />
+                        <TextBox x:Name="RemoteAddressTextBox" Header="Address contains" TextChanged="RemoteStateField_TextChanged" />
+                        <TextBox x:Name="RemoteTitleTextBox" Header="Title contains" TextChanged="RemoteStateField_TextChanged" />
+                        <TextBox x:Name="RemoteStatusTextBox" Header="Status text contains" TextChanged="RemoteStateField_TextChanged" />
+                        <TextBox x:Name="RemoteStateTextBox" Header="State contains" TextChanged="RemoteStateField_TextChanged" />
+                    </StackPanel>
                     <CheckBox x:Name="ForegroundOnlyCheckBox" Content="Match only while this process owns the foreground window" Click="ForegroundOnlyCheckBox_Click" />
                     <TextBlock x:Name="ForegroundHintTextBlock" Text="When another window becomes active, the restore settings are applied." Opacity="0.68" TextWrapping="Wrap" />
                     <Grid ColumnSpacing="8" Margin="0,2,0,0">
@@ -48,6 +62,11 @@
                         <NumberBox x:Name="PriorityOverrideNumberBox" Grid.Column="1" Minimum="-10000" Maximum="10000" SmallChange="1" SpinButtonPlacementMode="Compact" PlaceholderText="Auto" ValueChanged="PriorityOverrideNumberBox_ValueChanged" />
                     </Grid>
                     <TextBlock x:Name="PriorityOverrideHintTextBlock" Text="Leave blank to use automatic priority." Opacity="0.68" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Padding="12">
+                <StackPanel Spacing="8">
                     <TextBlock x:Name="OutputDeviceTitleTextBlock" Text="Output device" Style="{StaticResource SubtitleTextBlockStyle}" Margin="0,4,0,0" />
                     <TextBlock x:Name="OutputHintTextBlock" Text="When this process runs, route its audio streams to this endpoint." Opacity="0.68" TextWrapping="Wrap" />
                     <ComboBox x:Name="EndpointComboBox" DisplayMemberPath="DisplayName" HorizontalAlignment="Stretch" SelectionChanged="EndpointComboBox_SelectionChanged" />
@@ -67,7 +86,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Padding="12">
+            <Border Grid.Row="2" Style="{StaticResource CardBorderStyle}" Padding="12">
                 <StackPanel Spacing="8">
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <SymbolIcon Symbol="Audio" VerticalAlignment="Center" />
@@ -83,6 +102,7 @@
                     <ComboBox x:Name="ActiveProfileComboBox" SelectionChanged="ActiveProfileComboBox_SelectionChanged" />
                 </StackPanel>
             </Border>
+
         </Grid>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="10">

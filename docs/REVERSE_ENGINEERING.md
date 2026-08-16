@@ -129,7 +129,34 @@ CAPX supported
 Init and runtime parameters for ASAR written to Property Store for endpoint ...
 ```
 
-这表明 Dolby Access 的 Game/Movie 切换确实会写入端点 Property Store；这也是当前最有希望的自动化路线。
+这表明 Dolby Access 的 Game/Movie 切换会写入端点 Property Store，但 Property Store 不是运行时 profile 的充分验证。
+
+## 路径三：Dolby SpatialCodecs AppService
+
+对安装包中的 `DolbyAccess.dll` 和 `Dolby.SpatialCodecs.winmd` 做字符串及元数据分析后，确认了 Dolby 自己的 AppService：
+
+```text
+Service: com.DolbyLaboratories.DolbyAccess.
+Commands: SetProfile, SyncProfile, GetProfile
+Codec: {8F3BBD02-6BBE-4B60-9F8B-406837CE466F}
+```
+
+请求包含 `Command`、`DeviceID`、`MediaCodecName`。`SetProfile` 和 `SyncProfile` 还需要 `ProfileParameters` JSON，例如：
+
+```json
+{"IntelligentEqualizerType":"Detailed","CustomEqualizerSettings":null,"IsPerformanceMode":null,"IsSurroundVirtualizerEnabled":null,"IsDialogueEnhancerEnabled":null,"IsVolumeLevelerEnabled":null,"GamingSubProfile":null,"Type":"Game"}
+```
+
+当前端点的无 UI 脚本验证结果：
+
+```text
+GetProfile 之前: Type = Movie
+SetProfile: OK
+SyncProfile: OK
+GetProfile 之后: Type = Game
+```
+
+因此，原来的 CAPX setter 不是“调用成功但听感不明显”，而是只改了底层 CAPX 状态，没有走 Dolby Access 的运行时 profile 同步链路。WinUI provider 现已改为 `SetProfile → SyncProfile → GetProfile`，并以 Dolby AppService 回读作为成功条件。
 
 ## Game 映射验证记录
 
@@ -143,4 +170,42 @@ Init and runtime parameters for ASAR written to Property Store for endpoint ...
 - 不修改 `WindowsApps` 中的 Dolby 文件。
 - 不修改 `lic.dat`、Store receipt 或授权数据。
 - 不注入 DolbyAccess 进程，不绕过自定义 capability。
-+ CAPX `SetAtmosProfile` 已封装在独立 setter 中，并通过 Game/Movie 实际读回验证；C# UI 默认 dry-run，只有勾选 Apply 后才会执行写入。DAX profile setter 仍因本机没有 DAX RPC server 而不可用。
+- CAPX `SetAtmosProfile` 仅保留为逆向/诊断接口，不再作为 Dolby 运行时 setter。C# UI 只在进程规则触发、全局默认生效或用户点击测试时调用 AppService。DAX profile setter 仍因本机没有 DAX RPC server 而不可用。
+
+## DTS Sound Unbound 逆向修正（2026-08-16）
+
+用户提供的 DTS Sound Unbound 页面显示 `DTS Headphone:X`“已授权”，设备为
+`Generic Over-Ear Headphones`，空间模式为 `Balanced`。因此，
+`DTSDsecProxy.DTSDsecProxyLicenseInfo` 探针返回的 `Unlicensed` 不能解释为
+Headphone:X 未激活：它对应的是独立的 DSEC/DAP/Ultra 授权枚举。
+
+当前通用端点的 `CapxSettingsInterface.CapxSettings.IsCAPxSupported` 也返回
+`false`。CAPX 是 OEM/property-store 路径，不能作为通用 Headphone:X Store
+授权或配置失败的依据。Sound Unbound 二进制中的有效逆向目标是
+`DtsLicenseManager`、`DtsDeviceManager`、`SADOptionsManager`、
+`SetSADBlob`、`SetDeviceProfileBlob` 和 `SetRuntimeParameterSAD`。
+
+已通过包身份脚本确认 DTS AppService 能读取 `IsSpatialOutputHPX = TRUE`；
+`GetLicenseInfo` 与 `GetRuntimeParameters` 当前仍返回错误，不能作为授权判定。
+包的 `LICENSE_CACHE` 和 `ApplicationData` 中也存在加密授权缓存。进一步从
+`resources.pri` 读到 DTS 的真实选项：通用 Headphone:X 是 `Balanced`（平衡）
+和 `Spacious`（空阔），合作方目录是 `Gaming: Balanced/Neutral/Spacious/
+Spacious 2` 与 `Movies: Balanced/Spacious`。`Game`、`Movie` 不是 DTS 原生
+profile 名称，不能把它们硬映射成 DTS 选项。
+
+当前 AudioSwitch 已接入这些真实名称，provider 为 `dts-sad`，默认
+`Balanced`。通用端点的运行时 blob 对应关系为：
+
+```text
+Balanced -> 02-SPAC-HqHeightAndHgNf_SD1_Hp_Normal_v4_RC2.SPAC.crypt
+Spacious -> 04-SPAC-HqHeightAndHgNf_SD2_Hp_Normal_v4_RC2.SPAC.crypt
+```
+
+写入通过 DTS 包身份启动 `DtsSetProfile.exe` 完成：定位匹配
+`AudioRendererId` 的 `RuntimeSettings` composite value，更新
+`RuntimeSettingsBLOBName`，再回读同一入口确认。验证脚本已完成通用
+`Balanced -> Spacious -> Balanced` 的可逆写入/回读，最终恢复为 Balanced；
+整个路径不写注册表，也不依赖 DSEC license status、CAPX flag 或
+AudioSwitch 配置文件作为当前 DTS 值。
+
+完整 DTS 证据和命令输出见 [DTS_INTEGRATION.md](DTS_INTEGRATION.md)。

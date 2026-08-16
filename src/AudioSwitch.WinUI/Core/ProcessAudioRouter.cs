@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
 
 /// <summary>
 /// Changes the Windows system default render endpoint.

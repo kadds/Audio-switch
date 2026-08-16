@@ -1,9 +1,9 @@
 {
   "profiles": {
-    "DolbyAccessAutoSwitch.WinUI (Package)": {
+    "AudioSwitch.WinUI (Package)": {
       "commandName": "MsixPackage"
     },
-    "DolbyAccessAutoSwitch.WinUI (Unpackaged)": {
+    "AudioSwitch.WinUI (Unpackaged)": {
       "commandName": "Project"
     }
   }

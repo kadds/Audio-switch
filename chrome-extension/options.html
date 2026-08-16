@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AudioSwitch 浏览器接入</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="card">
+    <h1>AudioSwitch 浏览器接入</h1>
+    <p class="hint">浏览器标签页切换时，会把当前网页状态发送到 AudioSwitch。</p>
+
+    <label class="check-row">
+      <input id="enabled" type="checkbox">
+      <span>启用标签页状态投递</span>
+    </label>
+
+    <label>AudioSwitch HTTP 地址
+      <input id="endpoint" type="url" placeholder="http://127.0.0.1:8765/api/state">
+    </label>
+
+    <label>访问密码
+      <input id="password" type="password" autocomplete="off" placeholder="可选">
+    </label>
+
+    <div class="buttons">
+      <button id="save" class="primary">保存</button>
+      <button id="test">发送测试消息</button>
+    </div>
+    <div id="status" role="status"></div>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

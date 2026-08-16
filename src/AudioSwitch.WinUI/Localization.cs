@@ -2,7 +2,7 @@ using System.Globalization;
 using Windows.Globalization;
 using Microsoft.Windows.ApplicationModel.Resources;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
 
 internal static class Localization
 {

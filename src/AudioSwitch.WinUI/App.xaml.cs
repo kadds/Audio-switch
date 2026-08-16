@@ -4,11 +4,12 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Windows.Graphics;
 using WinRT.Interop;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
 
 public partial class App : Application
 {
@@ -28,6 +29,9 @@ public partial class App : Application
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(nint hWnd);
+
+    [DllImport("psapi.dll", SetLastError = true)]
+    private static extern bool EmptyWorkingSet(nint hProcess);
 
     public App()
     {
@@ -131,6 +135,21 @@ public partial class App : Application
     {
         if (window == null) return;
         ShowWindow(WindowNative.GetWindowHandle(window), 0);
+        TrimHiddenWindowWorkingSet();
+    }
+
+    private static void TrimHiddenWindowWorkingSet()
+    {
+        try
+        {
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
+            using Process process = Process.GetCurrentProcess();
+            EmptyWorkingSet(process.Handle);
+        }
+        catch
+        {
+            // Working-set trimming is an optional memory optimization.
+        }
     }
 
     private void ShowWindow()

@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
+using Polyline = Microsoft.UI.Xaml.Shapes.Polyline;
 using Microsoft.Win32;
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
@@ -16,14 +17,39 @@ using System.Text;
 using System.Runtime.InteropServices;
 using Windows.Storage.Pickers;
 using Windows.Data.Xml.Dom;
+using Windows.Foundation;
 using Windows.UI.Notifications;
 using WinRT.Interop;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
 
 public sealed partial class MainPage : Page, IDisposable
 {
     private const long MaxLogFileBytes = 4 * 1024 * 1024;
+    private static readonly HashSet<string> BrowserProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome",
+        "msedge",
+        "vivaldi",
+        "opera",
+        "opera_gx",
+        "brave",
+        "chromium",
+        "firefox",
+        "waterfox",
+        "librewolf",
+        "floorp",
+        "arc",
+        "zen",
+        "yandex",
+        "qqbrowser",
+        "360chrome",
+        "sogouexplorer",
+        "maxthon",
+        "coccoc",
+        "iridium",
+        "epic"
+    };
     private readonly object logFileLock = new();
     private sealed record AudioRestoreCheckpoint(
         string? EndpointPath,
@@ -38,6 +64,9 @@ public sealed partial class MainPage : Page, IDisposable
         string ActiveProfile,
         string ActiveSpatialAudioModeId);
 
+    private sealed record HttpStateMatch(ProcessSwitchItem Rule, HttpStateMessage State, int Order);
+    private sealed record AddressRuleMatch(ProcessSwitchItem Parent, ProcessAddressRule Rule, HttpStateMessage State, int Order);
+
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
 
@@ -48,17 +77,23 @@ public sealed partial class MainPage : Page, IDisposable
     private readonly ObservableCollection<AudioEndpointChoice> endpoints = new();
     private readonly ObservableCollection<string> logEntries = new();
     private readonly Dictionary<string, ProcessSwitchItem> processConfigs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (ProcessSwitchItem Parent, ProcessAddressRule Rule)> addressRuleConfigs = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> temporarilyDisabledRuleIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task> endpointProbeTasks = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherQueueTimer monitorTimer;
     private readonly DispatcherQueueTimer foregroundDebounceTimer;
     private readonly DispatcherQueueTimer audioRefreshTimer;
+    private readonly DispatcherQueueTimer audioCurveTimer;
     private readonly DispatcherQueueTimer notificationHideTimer;
     private readonly MenuFlyout processContextFlyout;
     private readonly MenuFlyoutItem copyProcessRuleMenuItem;
     private readonly MenuFlyoutItem pasteProcessRuleMenuItem;
     private readonly MenuFlyoutItem toggleProcessRuleMenuItem;
+    private readonly AudioCurveCapture audioCurveCapture = new();
+    private readonly AudioApiQueue audioApiQueue = new();
+    private readonly Dictionary<string, HttpStateMessage> latestHttpStates = new(StringComparer.OrdinalIgnoreCase);
     private SwitchConfig config;
+    private LocalHttpStateServer? httpStateServer;
     private AudioSystemChangeMonitor? audioSystemChangeMonitor;
     private ForegroundWindowMonitor? foregroundWindowMonitor;
     private string pendingAudioChangeReason = "Audio system changed";
@@ -73,6 +108,7 @@ public sealed partial class MainPage : Page, IDisposable
     private bool suppressGlobalProfileSelection;
     private bool suppressLanguageSelection;
     private bool suppressNotificationSelection;
+    private bool suppressHttpListenerSelection;
     private bool audioStateInitialized;
     private string lastDefaultEndpointPath = string.Empty;
     private string lastDefaultSpatialAudioModeId = string.Empty;
@@ -107,6 +143,7 @@ public sealed partial class MainPage : Page, IDisposable
 
         ProcessListView.ItemsSource = processChoices;
         RemoveProcessButton.IsEnabled = false;
+        AddAddressRuleProcessButton.IsEnabled = false;
         UpdateProcessEmptyState();
         AllEndpointsListView.ItemsSource = endpoints;
         monitorTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
@@ -117,6 +154,9 @@ public sealed partial class MainPage : Page, IDisposable
         audioRefreshTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         audioRefreshTimer.Interval = TimeSpan.FromMilliseconds(250);
         audioRefreshTimer.Tick += AudioRefreshTimer_Tick;
+        audioCurveTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
+        audioCurveTimer.Interval = TimeSpan.FromMilliseconds(33);
+        audioCurveTimer.Tick += AudioCurveTimer_Tick;
         notificationHideTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         notificationHideTimer.Interval = TimeSpan.FromSeconds(3.5);
         notificationHideTimer.Tick += NotificationHideTimer_Tick;
@@ -130,13 +170,16 @@ public sealed partial class MainPage : Page, IDisposable
 
         try
         {
-            AudioSystemStatus audio = AudioSystemState.Read(Array.Empty<AudioEndpointChoice>());
-            float? volume = null;
-            if (AudioVolumeController.TryGetEndpointVolume(null, out float currentVolume, out _)) volume = currentVolume;
-            exitRestoreCheckpoint = new AudioRestoreCheckpoint(
-                audio.DefaultEndpointPath,
-                string.IsNullOrWhiteSpace(audio.DefaultSpatialAudioModeId) ? "off" : audio.DefaultSpatialAudioModeId,
-                volume);
+            exitRestoreCheckpoint = audioApiQueue.EnqueueAsync(() =>
+            {
+                AudioSystemStatus audio = AudioSystemState.Read(Array.Empty<AudioEndpointChoice>());
+                float? volume = null;
+                if (AudioVolumeController.TryGetEndpointVolume(null, out float currentVolume, out _)) volume = currentVolume;
+                return Task.FromResult(new AudioRestoreCheckpoint(
+                    audio.DefaultEndpointPath,
+                    string.IsNullOrWhiteSpace(audio.DefaultSpatialAudioModeId) ? "off" : audio.DefaultSpatialAudioModeId,
+                    volume));
+            }).GetAwaiter().GetResult();
         }
         catch
         {
@@ -151,7 +194,7 @@ public sealed partial class MainPage : Page, IDisposable
         OutputTabTextBlock.Text = Localization.Text("MainPage_TabOutput");
         SpatialTabTextBlock.Text = Localization.Text("MainPage_TabSpatial");
         GeneralTabTextBlock.Text = Localization.Text("MainPage_TabGeneral");
-        NotificationsTabTextBlock.Text = Localization.Text("MainPage_TabNotifications");
+        AudioCurveTabTextBlock.Text = Localization.Text("MainPage_TabAudioCurve");
         ProcessTitleTextBlock.Text = Localization.Text("MainPage_ProcessTitle");
         ProcessDescriptionTextBlock.Text = Localization.Text("MainPage_ProcessDescription");
         ProcessEmptyTitleTextBlock.Text = Localization.Text("MainPage_ProcessEmptyTitle");
@@ -168,6 +211,20 @@ public sealed partial class MainPage : Page, IDisposable
         SpatialDefaultProfileTitleTextBlock.Text = Localization.Text("MainPage_SpatialDefaultProfileTitle");
         SpatialDefaultProfileHintTextBlock.Text = Localization.Text("MainPage_SpatialDefaultProfileHint");
         SpatialOptionsTextBlock.Text = Localization.Text("MainPage_SpatialOptions");
+        AudioCurveTitleTextBlock.Text = Localization.Text("MainPage_AudioCurveTitle");
+        AudioCurveHintTextBlock.Text = Localization.Text("MainPage_AudioCurveHint");
+        AudioCurveOutputLabelTextBlock.Text = Localization.Text("MainPage_AudioCurveOutput");
+        AudioCurveStatusLabelTextBlock.Text = Localization.Text("MainPage_AudioCurveStatus");
+        AudioCurveRmsLabelTextBlock.Text = Localization.Text("MainPage_AudioCurveRms");
+        AudioCurvePeakLabelTextBlock.Text = Localization.Text("MainPage_AudioCurvePeak");
+        AudioCurveFrequencyTitleTextBlock.Text = Localization.Text("MainPage_AudioCurveFrequencyTitle");
+        AudioCurveLowLabelTextBlock.Text = Localization.Text("MainPage_AudioCurveLow");
+        AudioCurveMidLabelTextBlock.Text = Localization.Text("MainPage_AudioCurveMid");
+        AudioCurveHighLabelTextBlock.Text = Localization.Text("MainPage_AudioCurveHigh");
+        AudioCurveFooterTextBlock.Text = Localization.Text("MainPage_AudioCurveFooter");
+        AudioCurveEmptyTextBlock.Text = Localization.Text("MainPage_AudioCurveStartHint");
+        UpdateAudioCurveToggleText(audioCurveCapture.IsRunning);
+        UpdateAudioCurveUi(audioCurveCapture.Snapshot());
         RefreshGlobalSpatialProfileChoices();
         GeneralTitleTextBlock.Text = Localization.Text("MainPage_GeneralTitle");
         LanguageLabelTextBlock.Text = Localization.Text("MainPage_LanguageLabel");
@@ -182,10 +239,20 @@ public sealed partial class MainPage : Page, IDisposable
         VolumeProtectionHintTextBlock.Text = Localization.Text("MainPage_VolumeProtectionHint");
         IntervalLabelTextBlock.Text = Localization.Text("MainPage_IntervalLabel");
         IntervalHintTextBlock.Text = Localization.Text("MainPage_IntervalHint");
+        HttpListenerTitleTextBlock.Text = Localization.Text("MainPage_HttpListenerTitle");
+        HttpListenerEnabledCheckBox.Content = Localization.Content("MainPage_HttpListenerEnabled");
+        HttpListenerBindLabelTextBlock.Text = Localization.Text("MainPage_HttpListenerBindLabel");
+        HttpListenerPortLabelTextBlock.Text = Localization.Text("MainPage_HttpListenerPortLabel");
+        HttpListenerPasswordLabelTextBlock.Text = Localization.Text("MainPage_HttpListenerPasswordLabel");
+        ChromeExtensionTitleTextBlock.Text = Localization.Text("MainPage_ChromeExtensionTitle");
+        ChromeExtensionHintTextBlock.Text = Localization.Text("MainPage_ChromeExtensionHint");
+        OpenChromeExtensionTextBlock.Text = Localization.Text("MainPage_OpenChromeExtension");
         TrayHintTextBlock.Text = Localization.Text("MainPage_TrayHint");
         LogExportTitleTextBlock.Text = Localization.Text("MainPage_LogExportTitle");
         LogExportHintTextBlock.Text = $"{Localization.Text("MainPage_LogExportHint")}\n{AppPaths.LogPath}";
+        OpenLogTextBlock.Text = Localization.Text("MainPage_OpenLog");
         ExportLogTextBlock.Text = Localization.Text("MainPage_ExportLog");
+        ClearLogTextBlock.Text = Localization.Text("MainPage_ClearLog");
         copyProcessRuleMenuItem.Text = Localization.Text("MainPage_CopyRule");
         pasteProcessRuleMenuItem.Text = Localization.Text("MainPage_PasteRule");
         NotificationsTitleTextBlock.Text = Localization.Text("MainPage_NotificationsTitle");
@@ -201,12 +268,16 @@ public sealed partial class MainPage : Page, IDisposable
         ToolTipService.SetToolTip(OutputDevicesTabButton, Localization.Get("MainPage_TabOutput.ToolTip"));
         ToolTipService.SetToolTip(SpatialAudioTabButton, Localization.Get("MainPage_TabSpatial.ToolTip"));
         ToolTipService.SetToolTip(GeneralTabButton, Localization.Get("MainPage_TabGeneral.ToolTip"));
-        ToolTipService.SetToolTip(NotificationsTabButton, Localization.Get("MainPage_TabNotifications.ToolTip"));
+        ToolTipService.SetToolTip(AudioCurveTabButton, Localization.Get("MainPage_TabAudioCurve.ToolTip"));
         ToolTipService.SetToolTip(AddProcessButton, Localization.Get("MainPage_AddProcess.ToolTip"));
+        ToolTipService.SetToolTip(AddAddressRuleProcessButton, Localization.Get("MainPage_AddAddressRule.ToolTip"));
         ToolTipService.SetToolTip(RemoveProcessButton, Localization.Get("MainPage_RemoveProcess.ToolTip"));
         ToolTipService.SetToolTip(SelectProcessButton, Localization.Get("MainPage_SelectProcess.ToolTip"));
         ToolTipService.SetToolTip(OpenSelectButton, Localization.Get("MainPage_OpenExe.ToolTip"));
+        ToolTipService.SetToolTip(OpenChromeExtensionButton, Localization.Get("MainPage_OpenChromeExtension.ToolTip"));
+        ToolTipService.SetToolTip(OpenLogButton, Localization.Get("MainPage_OpenLog.ToolTip"));
         ToolTipService.SetToolTip(ExportLogButton, Localization.Get("MainPage_ExportLog.ToolTip"));
+        ToolTipService.SetToolTip(ClearLogButton, Localization.Get("MainPage_ClearLog.ToolTip"));
         copyProcessRuleMenuItem.Text = Localization.Text("MainPage_CopyRule");
         pasteProcessRuleMenuItem.Text = Localization.Text("MainPage_PasteRule");
         UpdateProcessContextMenuState();
@@ -324,6 +395,24 @@ public sealed partial class MainPage : Page, IDisposable
                 processMetadataChanged = true;
             }
 
+            item.AddressRules ??= new List<ProcessAddressRule>();
+            foreach (ProcessAddressRule addressRule in item.AddressRules)
+            {
+                if (string.IsNullOrWhiteSpace(addressRule.RuleId))
+                {
+                    addressRule.RuleId = Guid.NewGuid().ToString("N");
+                    processMetadataChanged = true;
+                }
+
+                addressRule.Action ??= new ProcessSwitchItem();
+                if (!string.Equals(addressRule.Action.Name, item.Name, StringComparison.Ordinal))
+                {
+                    addressRule.Action.Name = item.Name;
+                    processMetadataChanged = true;
+                }
+                if (!string.IsNullOrWhiteSpace(addressRule.Address)) addressRule.Address = addressRule.Address.Trim();
+            }
+
             if (processConfigs.ContainsKey(item.RuleId))
             {
                 config.Processes.Remove(item);
@@ -346,6 +435,11 @@ public sealed partial class MainPage : Page, IDisposable
             ProcessChoice processChoice = runningChoice ?? ProcessChoice.FromStored(item);
             processChoice.RuleId = item.RuleId;
             processChoices.Add(processChoice);
+            foreach (ProcessAddressRule addressRule in item.AddressRules)
+            {
+                addressRuleConfigs[addressRule.RuleId] = (item, addressRule);
+                processChoices.Add(ProcessChoice.FromAddressRule(item, addressRule));
+            }
         }
 
         if (processMetadataChanged) SaveConfig();
@@ -377,6 +471,15 @@ public sealed partial class MainPage : Page, IDisposable
         StartMonitorCheckBox.IsChecked = config.StartMonitor;
         VolumeProtectionCheckBox.IsChecked = config.VolumeProtectionEnabled;
         MonitorIntervalNumberBox.Value = Math.Clamp(config.IntervalSeconds, 1, 60);
+        suppressHttpListenerSelection = true;
+        HttpListenerEnabledCheckBox.IsChecked = config.HttpListenerEnabled;
+        HttpListenerBindComboBox.SelectedItem = HttpListenerBindComboBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), config.HttpListenerBindAddress, StringComparison.OrdinalIgnoreCase))
+            ?? HttpListenerBindComboBox.Items.OfType<ComboBoxItem>().FirstOrDefault();
+        HttpListenerPortNumberBox.Value = Math.Clamp(config.HttpListenerPort, 1, 65535);
+        HttpListenerPasswordBox.Password = config.HttpListenerPassword;
+        suppressHttpListenerSelection = false;
 
         ProfileEditorHost.Content = new TextBlock
         {
@@ -399,6 +502,7 @@ public sealed partial class MainPage : Page, IDisposable
         }
         if (processChoices.Count > 0) ProcessListView.SelectedIndex = 0;
         Log("WinUI 3 interface ready.");
+        StartHttpListener();
         StartConfiguredMonitor();
     }
 
@@ -415,7 +519,7 @@ public sealed partial class MainPage : Page, IDisposable
                 ? Localization.Value("Status_LoadingOutputs")
                 : Localization.FormatValue("Status_RefreshingAudio", changeReason);
             double? endpointScrollOffset = ReadVerticalScrollOffset(AllEndpointsListView);
-            List<AudioEndpointChoice> loaded = await Task.Run(AudioEndpointChoice.ReadAll);
+            List<AudioEndpointChoice> loaded = await audioApiQueue.EnqueueAsync(() => Task.FromResult(AudioEndpointChoice.ReadAll()));
             endpoints.Clear();
             foreach (AudioEndpointChoice endpoint in loaded) endpoints.Add(endpoint);
             lock (endpointProbeTasks) endpointProbeTasks.Clear();
@@ -435,7 +539,7 @@ public sealed partial class MainPage : Page, IDisposable
 
     private async Task RefreshAudioStateAsync()
     {
-        AudioSystemStatus audio = await Task.Run(() => AudioSystemState.Read(endpoints.ToList()));
+        AudioSystemStatus audio = await audioApiQueue.EnqueueAsync(() => Task.FromResult(AudioSystemState.Read(endpoints.ToList())));
         string endpointPath = audio.DefaultEndpointPath ?? string.Empty;
         string spatialModeId = string.IsNullOrWhiteSpace(audio.DefaultSpatialAudioModeId)
             ? "off"
@@ -445,6 +549,7 @@ public sealed partial class MainPage : Page, IDisposable
         lastDefaultEndpointPath = endpointPath;
         lastDefaultSpatialAudioModeId = spatialModeId;
         audioStateInitialized = true;
+        if (outputChanged) audioCurveCapture.SetEndpoint(endpointPath);
 
         bool globalSettingsChanged = false;
         string globalEndpointFile = EndpointFileForGlobalDefaults();
@@ -472,9 +577,16 @@ public sealed partial class MainPage : Page, IDisposable
 
         CurrentOutputDeviceText.Text = currentOutput;
         SpatialAudioCurrentOutputText.Text = currentOutput;
-        float endpointVolumePercent = 0;
-        string volumeError = string.Empty;
-        bool volumeRead = !string.IsNullOrWhiteSpace(endpointPath) && AudioVolumeController.TryGetEndpointVolume(null, out endpointVolumePercent, out volumeError);
+        (bool Read, float Percent, string Error) volumeReadback = await audioApiQueue.EnqueueAsync(() =>
+        {
+            float percent = 0;
+            string error = string.Empty;
+            bool read = !string.IsNullOrWhiteSpace(endpointPath) && AudioVolumeController.TryGetEndpointVolume(null, out percent, out error);
+            return Task.FromResult((read, percent, error));
+        });
+        float endpointVolumePercent = volumeReadback.Percent;
+        string volumeError = volumeReadback.Error;
+        bool volumeRead = volumeReadback.Read;
         suppressGlobalVolumeSelection = true;
         float volumeMaximum = VolumeSafety.MaximumPercent(config.VolumeProtectionEnabled);
         GlobalVolumeSlider.Maximum = volumeMaximum;
@@ -487,7 +599,8 @@ public sealed partial class MainPage : Page, IDisposable
             float safeVolume = VolumeSafety.Clamp(endpointVolumePercent, config.VolumeProtectionEnabled);
             if (safeVolume < endpointVolumePercent)
             {
-                string protectionResult = AudioVolumeController.SetEndpointVolume(null, safeVolume, apply: true);
+                string protectionResult = await audioApiQueue.EnqueueAsync(() => Task.FromResult(
+                    AudioVolumeController.SetEndpointVolume(null, safeVolume, apply: true)));
                 Log($"Volume protection capped {endpointVolumePercent:0}% -> {safeVolume:0}%: {protectionResult}");
                 if (protectionResult.StartsWith("C# endpoint volume set", StringComparison.OrdinalIgnoreCase))
                 {
@@ -639,6 +752,143 @@ public sealed partial class MainPage : Page, IDisposable
         await RefreshEndpointsAsync(reason);
     }
 
+    private void AudioCurveToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (audioCurveCapture.IsRunning)
+        {
+            StopAudioCurve();
+            return;
+        }
+
+        audioCurveCapture.Start(string.IsNullOrWhiteSpace(lastDefaultEndpointPath) ? null : lastDefaultEndpointPath);
+        audioCurveTimer.Start();
+        UpdateAudioCurveToggleText(true);
+        UpdateAudioCurveUi(audioCurveCapture.Snapshot());
+    }
+
+    private void StopAudioCurve()
+    {
+        audioCurveTimer.Stop();
+        audioCurveCapture.Stop();
+        UpdateAudioCurveToggleText(false);
+        UpdateAudioCurveUi(audioCurveCapture.Snapshot());
+    }
+
+    private void AudioCurveTimer_Tick(DispatcherQueueTimer sender, object args)
+    {
+        AudioCurveSnapshot snapshot = audioCurveCapture.Snapshot();
+        UpdateAudioCurveUi(snapshot);
+        if (!audioCurveCapture.IsRunning && snapshot.State == AudioCurveCaptureState.Error)
+        {
+            audioCurveTimer.Stop();
+            UpdateAudioCurveToggleText(false);
+        }
+    }
+
+    private void AudioCurveCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        AudioCurveSnapshot snapshot = audioCurveCapture.Snapshot();
+        DrawAudioCurve(snapshot.Samples);
+        DrawFrequencyCurves(snapshot.LowFrequencyLevels, snapshot.MidFrequencyLevels, snapshot.HighFrequencyLevels);
+    }
+
+    private void AudioFrequencyCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        AudioCurveSnapshot snapshot = audioCurveCapture.Snapshot();
+        DrawFrequencyCurves(snapshot.LowFrequencyLevels, snapshot.MidFrequencyLevels, snapshot.HighFrequencyLevels);
+    }
+
+    private void UpdateAudioCurveUi(AudioCurveSnapshot snapshot)
+    {
+        string endpointName = endpoints.FirstOrDefault(endpoint =>
+            string.Equals(endpoint.EndpointPath, snapshot.EndpointPath, StringComparison.OrdinalIgnoreCase))?.DisplayName
+            ?? (string.IsNullOrWhiteSpace(snapshot.EndpointPath)
+                ? Localization.Value("Status_Unavailable")
+                : Localization.Text("MainPage_AudioCurveCurrentOutput"));
+        AudioCurveEndpointTextBlock.Text = endpointName;
+        AudioCurveStatusTextBlock.Text = snapshot.State switch
+        {
+            AudioCurveCaptureState.Starting => Localization.Text("MainPage_AudioCurveStarting"),
+            AudioCurveCaptureState.Listening => Localization.Text("MainPage_AudioCurveListening"),
+            AudioCurveCaptureState.NoSignal => Localization.Text("MainPage_AudioCurveNoSignal"),
+            AudioCurveCaptureState.Error => string.IsNullOrWhiteSpace(snapshot.ErrorMessage)
+                ? Localization.Text("MainPage_AudioCurveError")
+                : $"{Localization.Text("MainPage_AudioCurveError")}: {snapshot.ErrorMessage}",
+            _ => Localization.Text("MainPage_AudioCurveStopped")
+        };
+        AudioCurveRmsTextBlock.Text = snapshot.State is AudioCurveCaptureState.Listening or AudioCurveCaptureState.NoSignal
+            ? $"{snapshot.RmsPercent:0.0}%"
+            : "--%";
+        AudioCurvePeakTextBlock.Text = snapshot.State is AudioCurveCaptureState.Listening or AudioCurveCaptureState.NoSignal
+            ? $"{snapshot.PeakPercent:0.0}%"
+            : "--%";
+        AudioCurveEmptyTextBlock.Visibility = snapshot.State is AudioCurveCaptureState.Listening or AudioCurveCaptureState.NoSignal
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        DrawAudioCurve(snapshot.Samples);
+        DrawFrequencyCurves(snapshot.LowFrequencyLevels, snapshot.MidFrequencyLevels, snapshot.HighFrequencyLevels);
+    }
+
+    private void UpdateAudioCurveToggleText(bool running)
+    {
+        AudioCurveToggleIcon.Symbol = running ? Symbol.Pause : Symbol.Play;
+        AudioCurveToggleTextBlock.Text = Localization.Text(running ? "MainPage_AudioCurveStop" : "MainPage_AudioCurveStart");
+    }
+
+    private void DrawAudioCurve(IReadOnlyList<float> samples)
+    {
+        double width = AudioCurveCanvas.ActualWidth;
+        double height = AudioCurveCanvas.ActualHeight;
+        if (width <= 4 || height <= 4) return;
+
+        AudioCurveCenterLine.X1 = 0;
+        AudioCurveCenterLine.X2 = width;
+        AudioCurveCenterLine.Y1 = height / 2;
+        AudioCurveCenterLine.Y2 = height / 2;
+        AudioCurvePolyline.Points.Clear();
+        if (samples.Count == 0) return;
+
+        for (int index = 0; index < samples.Count; index++)
+        {
+            double x = samples.Count == 1 ? 0 : width * index / (samples.Count - 1);
+            double y = height / 2 - Math.Clamp(samples[index], -1f, 1f) * height * 0.44;
+            AudioCurvePolyline.Points.Add(new Point(x, y));
+        }
+    }
+
+    private void DrawFrequencyCurves(
+        IReadOnlyList<float> lowLevels,
+        IReadOnlyList<float> midLevels,
+        IReadOnlyList<float> highLevels)
+    {
+        double width = AudioFrequencyCanvas.ActualWidth;
+        double height = AudioFrequencyCanvas.ActualHeight;
+        if (width <= 4 || height <= 4) return;
+
+        AudioFrequencyCenterLine.X1 = 0;
+        AudioFrequencyCenterLine.X2 = width;
+        AudioFrequencyCenterLine.Y1 = height - 2;
+        AudioFrequencyCenterLine.Y2 = height - 2;
+        AudioCurveLowPolyline.Points.Clear();
+        AudioCurveMidPolyline.Points.Clear();
+        AudioCurveHighPolyline.Points.Clear();
+        AddFrequencyPoints(AudioCurveLowPolyline, lowLevels, width, height);
+        AddFrequencyPoints(AudioCurveMidPolyline, midLevels, width, height);
+        AddFrequencyPoints(AudioCurveHighPolyline, highLevels, width, height);
+    }
+
+    private static void AddFrequencyPoints(Polyline polyline, IReadOnlyList<float> levels, double width, double height)
+    {
+        if (levels.Count == 0) return;
+        for (int index = 0; index < levels.Count; index++)
+        {
+            double x = levels.Count == 1 ? 0 : width * index / (levels.Count - 1);
+            double level = Math.Clamp(levels[index], 0f, 1f);
+            double y = height - 2 - level * (height - 8);
+            polyline.Points.Add(new Point(x, y));
+        }
+    }
+
     private async void AllEndpointsListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (suppressOutputDeviceSelection || AllEndpointsListView.SelectedItem is not AudioEndpointChoice endpoint) return;
@@ -649,14 +899,15 @@ public sealed partial class MainPage : Page, IDisposable
         }
 
         UpdateGlobalOutput(endpoint.EndpointPath);
-        string result = await Task.Run(() => ProcessAudioRouter.SetSystemDefaultOutputDevice(endpoint.EndpointPath, apply: true));
+        string result = await audioApiQueue.EnqueueAsync(() => Task.FromResult(
+            ProcessAudioRouter.SetSystemDefaultOutputDevice(endpoint.EndpointPath, apply: true)));
         Log(result);
         if (config.GlobalVolumePercent is float globalVolume)
         {
-            Log(await Task.Run(() => AudioVolumeController.SetEndpointVolume(
+            Log(await audioApiQueue.EnqueueAsync(() => Task.FromResult(AudioVolumeController.SetEndpointVolume(
                 null,
                 VolumeSafety.Clamp(globalVolume, config.VolumeProtectionEnabled),
-                apply: true)));
+                apply: true))));
         }
         await RefreshAudioStateAsync();
     }
@@ -677,7 +928,9 @@ public sealed partial class MainPage : Page, IDisposable
             // older async write cannot finish after the final thumb position.
             await Task.Delay(80, applyCts.Token);
             applyCts.Token.ThrowIfCancellationRequested();
-            string result = AudioVolumeController.SetEndpointVolume(null, percent, apply: true);
+            string result = await audioApiQueue.EnqueueAsync(
+                () => Task.FromResult(AudioVolumeController.SetEndpointVolume(null, percent, apply: true)),
+                applyCts.Token);
             if (applyCts.IsCancellationRequested) return;
             Log(result);
             OutputVolumeHintTextBlock.Text = result;
@@ -706,7 +959,7 @@ public sealed partial class MainPage : Page, IDisposable
     {
         if (suppressSpatialAudioSelection || SpatialAudioOptionsListView.SelectedItem is not SpatialAudioOption option) return;
 
-        AudioSystemStatus audio = await Task.Run(() => AudioSystemState.Read(endpoints.ToList()));
+        AudioSystemStatus audio = await audioApiQueue.EnqueueAsync(() => Task.FromResult(AudioSystemState.Read(endpoints.ToList())));
         if (string.IsNullOrWhiteSpace(audio.DefaultEndpointPath))
         {
             Log(Localization.Get("Log_NoDefaultOutputDevice"));
@@ -719,7 +972,10 @@ public sealed partial class MainPage : Page, IDisposable
             return;
         }
 
-        string result = await AudioSystemState.SetDefaultSpatialAudioModeAsync(audio.DefaultEndpointPath, option.Id, apply: true);
+        string result = await audioApiQueue.EnqueueAsync(() => AudioSystemState.SetDefaultSpatialAudioModeAsync(
+            audio.DefaultEndpointPath,
+            option.Id,
+            apply: true));
         UpdateGlobalSpatialAudio(option.Id);
         Log(result);
         await RefreshAudioStateAsync();
@@ -804,14 +1060,30 @@ public sealed partial class MainPage : Page, IDisposable
 
     private void ProcessListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ProcessListView.SelectedItem is not ProcessChoice choice || !processConfigs.TryGetValue(choice.RuleId, out ProcessSwitchItem? model))
+        if (ProcessListView.SelectedItem is not ProcessChoice choice)
         {
             RemoveProcessButton.IsEnabled = false;
+            AddAddressRuleProcessButton.IsEnabled = false;
             return;
         }
 
         RemoveProcessButton.IsEnabled = true;
-        ShowProcessProfile(choice, model);
+        if (choice.IsAddressRule && addressRuleConfigs.TryGetValue(choice.RuleId, out (ProcessSwitchItem Parent, ProcessAddressRule Rule) addressContext))
+        {
+            AddAddressRuleProcessButton.IsEnabled = addressContext.Parent.MatchMode != ProcessMatchMode.HttpState;
+            ShowAddressRuleProfile(choice, addressContext.Parent, addressContext.Rule);
+        }
+        else if (processConfigs.TryGetValue(choice.RuleId, out ProcessSwitchItem? model))
+        {
+            AddAddressRuleProcessButton.IsEnabled = model.MatchMode != ProcessMatchMode.HttpState;
+            ShowProcessProfile(choice, model);
+        }
+        else
+        {
+            RemoveProcessButton.IsEnabled = false;
+            AddAddressRuleProcessButton.IsEnabled = false;
+        }
+        UpdateProcessContextMenuState();
     }
 
     private void ShowProcessProfile(ProcessChoice choice, ProcessSwitchItem model)
@@ -822,6 +1094,25 @@ public sealed partial class MainPage : Page, IDisposable
         view.SettingsChanged += ProfileView_SettingsChanged;
         view.TestActiveRequested += ProfileView_TestActiveRequested;
         ProfileEditorHost.Content = view;
+        if (volumeChanged) SaveConfig();
+        if (view.SelectedEndpoint is { IsKeepCurrent: false } endpoint) ProbeEndpointForView(view, endpoint);
+    }
+
+    private void ShowAddressRuleProfile(ProcessChoice choice, ProcessSwitchItem parent, ProcessAddressRule addressRule)
+    {
+        addressRule.Action ??= new ProcessSwitchItem { Name = parent.Name };
+        addressRule.Action.Name = parent.Name;
+        var view = new ProcessProfileView(
+            addressRule.Action,
+            ReadEndpointPath(addressRule.Action.EndpointFile),
+            addressRule,
+            parent);
+        bool volumeChanged = view.SetVolumeProtection(config.VolumeProtectionEnabled);
+        view.SetEndpoints(endpoints);
+        view.SettingsChanged += ProfileView_SettingsChanged;
+        view.TestActiveRequested += ProfileView_TestActiveRequested;
+        ProfileEditorHost.Content = view;
+        RefreshAddressRuleChoice(addressRule);
         if (volumeChanged) SaveConfig();
         if (view.SelectedEndpoint is { IsKeepCurrent: false } endpoint) ProbeEndpointForView(view, endpoint);
     }
@@ -921,15 +1212,16 @@ public sealed partial class MainPage : Page, IDisposable
         ProcessRulesPage.Visibility = tab == 0 ? Visibility.Visible : Visibility.Collapsed;
         OutputDevicesPage.Visibility = tab == 1 ? Visibility.Visible : Visibility.Collapsed;
         SpatialAudioPage.Visibility = tab == 2 ? Visibility.Visible : Visibility.Collapsed;
-        GeneralPage.Visibility = tab == 3 ? Visibility.Visible : Visibility.Collapsed;
-        NotificationsPage.Visibility = tab == 4 ? Visibility.Visible : Visibility.Collapsed;
+        AudioCurvePage.Visibility = tab == 3 ? Visibility.Visible : Visibility.Collapsed;
+        GeneralPage.Visibility = tab == 4 ? Visibility.Visible : Visibility.Collapsed;
+        if (tab != 3) StopAudioCurve();
         UpdateTabSelection(tab);
         AnimateTabPage(tab switch
         {
             1 => OutputDevicesPage,
             2 => SpatialAudioPage,
-            3 => GeneralPage,
-            4 => NotificationsPage,
+            3 => AudioCurvePage,
+            4 => GeneralPage,
             _ => ProcessRulesPage
         });
     }
@@ -972,7 +1264,7 @@ public sealed partial class MainPage : Page, IDisposable
 
     private void UpdateTabSelection(int selectedTab)
     {
-        Button[] buttons = { ProcessRulesTabButton, OutputDevicesTabButton, SpatialAudioTabButton, GeneralTabButton, NotificationsTabButton };
+        Button[] buttons = { ProcessRulesTabButton, OutputDevicesTabButton, SpatialAudioTabButton, AudioCurveTabButton, GeneralTabButton };
         for (int index = 0; index < buttons.Length; index++)
         {
             buttons[index].Style = (Style)Application.Current.Resources[index == selectedTab ? "ActiveTabButtonStyle" : "TabButtonStyle"];
@@ -1035,6 +1327,137 @@ public sealed partial class MainPage : Page, IDisposable
         AddProcess(processName, choice);
     }
 
+    private async void AddAddressRuleProcessButton_Click(object sender, RoutedEventArgs e)
+    {
+        ProcessSwitchItem? parent = null;
+        ProcessChoice? parentChoice = null;
+        if (ProcessListView.SelectedItem is ProcessChoice selected)
+        {
+            if (selected.IsAddressRule && addressRuleConfigs.TryGetValue(selected.RuleId, out (ProcessSwitchItem Parent, ProcessAddressRule Rule) addressContext))
+            {
+                parent = addressContext.Parent;
+            }
+            else if (processConfigs.TryGetValue(selected.RuleId, out ProcessSwitchItem? selectedParent))
+            {
+                parent = selectedParent;
+            }
+        }
+
+        if (parent == null || parent.MatchMode == ProcessMatchMode.HttpState) return;
+        parentChoice = processChoices.FirstOrDefault(choice => string.Equals(choice.RuleId, parent.RuleId, StringComparison.OrdinalIgnoreCase));
+        if (parentChoice == null) return;
+
+        if (!IsSupportedBrowserProcess(parent.Name))
+        {
+            await ShowBrowserIntegrationDialogAsync(chromeSelected: false);
+            return;
+        }
+
+        if (!config.BrowserIntegrationPromptDismissed)
+        {
+            ContentDialogResult result = await ShowBrowserIntegrationDialogAsync(chromeSelected: true);
+            if (result != ContentDialogResult.Primary) return;
+        }
+
+        var addressRule = new ProcessAddressRule
+        {
+            Name = Localization.Value("ProcessProfile_NewAddressRule"),
+            Action = new ProcessSwitchItem
+            {
+                Name = parent.Name,
+                MatchMode = ProcessMatchMode.ProcessName,
+                ForegroundOnly = false,
+                EndpointFile = parent.EndpointFile,
+                ActiveProfile = parent.ActiveProfile,
+                ActiveSpatialAudioModeId = parent.ActiveSpatialAudioModeId,
+                GlobalVolumePercent = parent.GlobalVolumePercent
+            }
+        };
+        parent.AddressRules.Add(addressRule);
+        addressRuleConfigs[addressRule.RuleId] = (parent, addressRule);
+
+        int parentIndex = processChoices.IndexOf(parentChoice);
+        int insertIndex = parentIndex + 1;
+        while (insertIndex < processChoices.Count &&
+               processChoices[insertIndex].IsAddressRule &&
+               string.Equals(processChoices[insertIndex].ParentRuleId, parent.RuleId, StringComparison.OrdinalIgnoreCase))
+        {
+            insertIndex++;
+        }
+
+        ProcessChoice childChoice = ProcessChoice.FromAddressRule(parent, addressRule);
+        processChoices.Insert(insertIndex, childChoice);
+        UpdateProcessEmptyState();
+        ProcessListView.SelectedItem = childChoice;
+        SaveConfig();
+        UpdateMonitoringSchedule();
+    }
+
+    private static bool IsSupportedBrowserProcess(string? processName)
+    {
+        string normalized = Path.GetFileNameWithoutExtension((processName ?? string.Empty).Trim());
+        return BrowserProcessNames.Contains(normalized);
+    }
+
+    private async Task<ContentDialogResult> ShowBrowserIntegrationDialogAsync(bool chromeSelected)
+    {
+        var content = new StackPanel { Spacing = 10 };
+        content.Children.Add(new TextBlock
+        {
+            Text = Localization.Text(chromeSelected
+                ? "BrowserIntegrationDialog.Description"
+                : "BrowserIntegrationDialog.ChromeRequiredDescription"),
+            TextWrapping = TextWrapping.Wrap
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = Localization.Text("BrowserIntegrationDialog.PluginHint"),
+            Opacity = 0.72,
+            TextWrapping = TextWrapping.Wrap
+        });
+
+        CheckBox? dontShowAgain = null;
+        if (chromeSelected)
+        {
+            dontShowAgain = new CheckBox
+            {
+                Content = Localization.Text("BrowserIntegrationDialog.DontShowAgain"),
+                Margin = new Thickness(0, 4, 0, 0)
+            };
+            content.Children.Add(dontShowAgain);
+        }
+
+        var dialog = new ContentDialog
+        {
+            Title = Localization.Text(chromeSelected
+                ? "BrowserIntegrationDialog.Title"
+                : "BrowserIntegrationDialog.ChromeRequiredTitle"),
+            PrimaryButtonText = Localization.Text(chromeSelected
+                ? "BrowserIntegrationDialog.Continue"
+                : "BrowserIntegrationDialog.Acknowledge"),
+            SecondaryButtonText = Localization.Text("BrowserIntegrationDialog.OpenPlugin"),
+            CloseButtonText = Localization.Text("BrowserIntegrationDialog.Cancel"),
+            DefaultButton = ContentDialogButton.Primary,
+            Content = content,
+            XamlRoot = XamlRoot
+        };
+
+        ContentDialogResult result = await dialog.ShowAsync();
+        if (chromeSelected && dontShowAgain?.IsChecked == true)
+        {
+            config.BrowserIntegrationPromptDismissed = true;
+            AppPaths.EnsureDataDirectories();
+            config.Save(AppPaths.ConfigPath);
+        }
+
+        if (result == ContentDialogResult.Secondary)
+        {
+            OpenChromeExtensionDirectory();
+        }
+
+        return result;
+    }
+
     private void AddProcess(string? name, ProcessChoice? detectedChoice = null)
     {
         string value = (name ?? string.Empty).Trim();
@@ -1063,11 +1486,38 @@ public sealed partial class MainPage : Page, IDisposable
 
     private void RemoveProcess_Click(object sender, RoutedEventArgs e)
     {
-        if (ProcessListView.SelectedItem is not ProcessChoice choice || !processConfigs.TryGetValue(choice.RuleId, out ProcessSwitchItem? model)) return;
+        if (ProcessListView.SelectedItem is not ProcessChoice choice) return;
+
+        if (choice.IsAddressRule && addressRuleConfigs.TryGetValue(choice.RuleId, out (ProcessSwitchItem Parent, ProcessAddressRule Rule) addressContext))
+        {
+            addressContext.Parent.AddressRules.Remove(addressContext.Rule);
+            addressRuleConfigs.Remove(choice.RuleId);
+            temporarilyDisabledRuleIds.Remove(choice.RuleId);
+            processChoices.Remove(choice);
+            UpdateProcessEmptyState();
+            ProcessChoice? parentChoice = processChoices.FirstOrDefault(item => string.Equals(item.RuleId, addressContext.Parent.RuleId, StringComparison.OrdinalIgnoreCase));
+            if (parentChoice != null) ProcessListView.SelectedItem = parentChoice;
+            SaveConfig();
+            UpdateMonitoringSchedule();
+            return;
+        }
+
+        if (!processConfigs.TryGetValue(choice.RuleId, out ProcessSwitchItem? model)) return;
         processConfigs.Remove(choice.RuleId);
         temporarilyDisabledRuleIds.Remove(choice.RuleId);
+        foreach (ProcessAddressRule addressRule in model.AddressRules)
+        {
+            addressRuleConfigs.Remove(addressRule.RuleId);
+            temporarilyDisabledRuleIds.Remove(addressRule.RuleId);
+        }
         config.Processes.Remove(model);
-        processChoices.Remove(choice);
+        foreach (ProcessChoice processChoice in processChoices
+                     .Where(item => string.Equals(item.RuleId, model.RuleId, StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(item.ParentRuleId, model.RuleId, StringComparison.OrdinalIgnoreCase))
+                     .ToList())
+        {
+            processChoices.Remove(processChoice);
+        }
         UpdateProcessEmptyState();
         ProfileEditorHost.Content = new TextBlock
         {
@@ -1212,6 +1662,8 @@ public sealed partial class MainPage : Page, IDisposable
         var result = byName.Values.ToList();
         result.Sort((a, b) =>
         {
+            int browserOrder = IsSupportedBrowserProcess(a.Name).CompareTo(IsSupportedBrowserProcess(b.Name));
+            if (browserOrder != 0) return browserOrder;
             int windowOrder = b.HasWindow.CompareTo(a.HasWindow);
             return windowOrder != 0 ? windowOrder : StringComparer.CurrentCultureIgnoreCase.Compare(a.Name, b.Name);
         });
@@ -1221,6 +1673,31 @@ public sealed partial class MainPage : Page, IDisposable
     private void ProfileView_SettingsChanged(object? sender, EventArgs e)
     {
         if (sender is not ProcessProfileView view) return;
+
+        if (view.AddressRule is ProcessAddressRule addressRule && view.ParentModel is ProcessSwitchItem parentModel)
+        {
+            if (view.SelectedEndpoint is { IsKeepCurrent: true })
+            {
+                view.Model.EndpointFile = string.Empty;
+            }
+            else if (view.SelectedEndpoint is AudioEndpointChoice addressEndpoint)
+            {
+                string? currentPath = ReadEndpointPath(view.Model.EndpointFile);
+                if (!string.Equals(currentPath, addressEndpoint.EndpointPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    string endpointFile = EndpointFileForAddressRule(parentModel.Name, addressRule.RuleId);
+                    File.WriteAllText(endpointFile, addressEndpoint.EndpointPath, Encoding.UTF8);
+                    view.Model.EndpointFile = endpointFile;
+                }
+                ProbeEndpointForView(view, addressEndpoint);
+            }
+
+            RefreshAddressRuleChoice(addressRule);
+            SaveConfig();
+            UpdateMonitoringSchedule();
+            return;
+        }
+
         if (view.SelectedEndpoint is { IsKeepCurrent: true })
         {
             view.Model.EndpointFile = string.Empty;
@@ -1243,6 +1720,15 @@ public sealed partial class MainPage : Page, IDisposable
         // inactive rule must not change the system default output immediately.
     }
 
+    private void RefreshAddressRuleChoice(ProcessAddressRule addressRule)
+    {
+        if (addressRuleConfigs.TryGetValue(addressRule.RuleId, out _) &&
+            processChoices.FirstOrDefault(choice => string.Equals(choice.RuleId, addressRule.RuleId, StringComparison.OrdinalIgnoreCase)) is ProcessChoice choice)
+        {
+            choice.UpdateAddressRule(addressRule);
+        }
+    }
+
     private void ProfileView_TestActiveRequested(object? sender, EventArgs e)
     {
         if (sender is ProcessProfileView view)
@@ -1262,7 +1748,7 @@ public sealed partial class MainPage : Page, IDisposable
         {
             if (!endpointProbeTasks.TryGetValue(endpoint.EndpointId, out Task? task))
             {
-                task = Task.Run(() => AudioProfileProviderRegistry.ProbeAll(endpoint));
+                task = audioApiQueue.EnqueueAsync(() => AudioProfileProviderRegistry.ProbeAllAsync(endpoint));
                 endpointProbeTasks[endpoint.EndpointId] = task;
             }
             return task;
@@ -1370,6 +1856,206 @@ public sealed partial class MainPage : Page, IDisposable
         MonitorTimer_Tick(monitorTimer, new object(), processId);
     }
 
+    private Task<HttpStateDispatchResult> HandleHttpStateAsync(HttpStateMessage state)
+    {
+        var completion = new TaskCompletionSource<HttpStateDispatchResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            try
+            {
+                completion.TrySetResult(DispatchHttpState(state));
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetResult(new HttpStateDispatchResult(500, false, false, ex.Message));
+            }
+        }))
+        {
+            completion.TrySetResult(new HttpStateDispatchResult(503, false, false, "AudioSwitch UI dispatcher is unavailable."));
+        }
+
+        return completion.Task;
+    }
+
+    private HttpStateDispatchResult DispatchHttpState(HttpStateMessage state)
+    {
+        latestHttpStates[state.ProcessName] = state;
+        // Dispatch the event that just arrived. The cached states are for the
+        // monitor fallback only; they must not let an unrelated older browser
+        // state trigger this request.
+        AddressRuleMatch? addressMatch = FindBestAddressRuleMatch(state);
+        HttpStateMatch? match = FindBestHttpStateMatch(state);
+        if (addressMatch != null &&
+            (match == null || AddressRulePriority(addressMatch) >= RulePriority(match.Rule)))
+        {
+            string addressSignature = AddressRuleSignature(addressMatch);
+            if (string.Equals(activeGlobalSettingsSignature, addressSignature, StringComparison.Ordinal))
+            {
+                return new HttpStateDispatchResult(200, true, false, "The matching address sub-rule is already active.", addressMatch.Rule.RuleId, addressMatch.Rule.DisplayName);
+            }
+
+            bool addressQueued = RunAddressProfileAsync(addressMatch, AddressRuleOperationKey(addressMatch));
+            if (!addressQueued)
+            {
+                return new HttpStateDispatchResult(409, true, false, "The audio queue is busy; the address state was recorded and will be retried by monitoring.", addressMatch.Rule.RuleId, addressMatch.Rule.DisplayName);
+            }
+
+            activeGlobalSettingsSignature = addressSignature;
+            Log($"HTTP address sub-rule matched '{addressMatch.Rule.DisplayName}': process={state.ProcessName}; address={state.Address}");
+            return new HttpStateDispatchResult(200, true, true, "The matching address audio action was queued.", addressMatch.Rule.RuleId, addressMatch.Rule.DisplayName);
+        }
+
+        if (match == null)
+        {
+            Log($"HTTP state received without a matching rule: process={state.ProcessName}; address={state.Address}; title={state.Title}; status={state.StatusText}; state={state.State}");
+            return new HttpStateDispatchResult(404, false, false, "No HTTP state rule matched the message.");
+        }
+
+        string signature = HttpStateSignature(match);
+        if (string.Equals(activeGlobalSettingsSignature, signature, StringComparison.Ordinal))
+        {
+            return new HttpStateDispatchResult(200, true, false, "The matching HTTP state is already active.", match.Rule.RuleId, match.Rule.Name);
+        }
+
+        bool queued = RunProfileAsync(
+            match.Rule,
+            match.Rule.ActiveProfile,
+            match.Rule.ActiveSpatialAudioModeId,
+            HttpStateOperationKey(match));
+        if (!queued)
+        {
+            return new HttpStateDispatchResult(409, true, false, "The audio queue is busy; the HTTP state was recorded and will be retried by monitoring.", match.Rule.RuleId, match.Rule.Name);
+        }
+
+        activeGlobalSettingsSignature = signature;
+        Log($"HTTP state matched rule '{match.Rule.Name}': process={state.ProcessName}; address={state.Address}; title={state.Title}; status={state.StatusText}; state={state.State}");
+        return new HttpStateDispatchResult(200, true, true, "The matching audio action was queued.", match.Rule.RuleId, match.Rule.Name);
+    }
+
+    private AddressRuleMatch? FindBestAddressRuleMatch(HttpStateMessage? onlyState = null)
+    {
+        var matches = new List<AddressRuleMatch>();
+        int order = 0;
+        foreach (ProcessSwitchItem parent in config.Processes)
+        {
+            if (temporarilyDisabledRuleIds.Contains(parent.RuleId) ||
+                parent.MatchMode == ProcessMatchMode.HttpState ||
+                parent.AddressRules.Count == 0)
+            {
+                order++;
+                continue;
+            }
+
+            IEnumerable<HttpStateMessage> states = onlyState == null
+                ? latestHttpStates.Values
+                : new[] { onlyState };
+            foreach (ProcessAddressRule addressRule in parent.AddressRules)
+            {
+                foreach (HttpStateMessage state in states)
+                {
+                    if (AddressRuleMatches(parent, addressRule, state))
+                    {
+                        matches.Add(new AddressRuleMatch(parent, addressRule, state, order));
+                    }
+                }
+            }
+            order++;
+        }
+
+        return matches
+            .OrderByDescending(AddressRulePriority)
+            .ThenBy(match => match.Order)
+            .FirstOrDefault();
+    }
+
+    private static bool AddressRuleMatches(ProcessSwitchItem parent, ProcessAddressRule addressRule, HttpStateMessage state) =>
+        !string.IsNullOrWhiteSpace(addressRule.Address) &&
+        ProcessNamesEqual(parent.Name, state.ProcessName) &&
+        state.Address.Contains(addressRule.Address.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static int AddressRulePriority(AddressRuleMatch match)
+    {
+        if (match.Rule.Action.PriorityOverride.HasValue) return match.Rule.Action.PriorityOverride.Value;
+        return 250 + Math.Min(match.Rule.Address.Trim().Length, 100);
+    }
+
+    private string AddressRuleSignature(AddressRuleMatch match)
+    {
+        ProcessSwitchItem action = match.Rule.Action;
+        string value = string.Join("\u001f",
+            match.Parent.RuleId,
+            match.Rule.RuleId,
+            match.State.ProcessName,
+            match.State.Address,
+            match.State.Title,
+            match.State.StatusText,
+            match.State.State,
+            action.ActiveSpatialAudioModeId,
+            action.ActiveProfile,
+            ReadEndpointPath(action.EndpointFile) ?? string.Empty,
+            action.GlobalVolumePercent?.ToString() ?? "<parent>",
+            match.Parent.GlobalVolumePercent?.ToString() ?? "<default>",
+            config.GlobalVolumePercent?.ToString() ?? "<none>");
+        return "address|" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static string AddressRuleOperationKey(AddressRuleMatch match) =>
+        "address:" + match.Rule.RuleId + ":" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\u001f", match.State.ProcessName, match.State.Address)))).Substring(0, 16);
+
+    private HttpStateMatch? FindBestHttpStateMatch(HttpStateMessage? onlyState = null)
+    {
+        var matches = new List<HttpStateMatch>();
+        int order = 0;
+        foreach (ProcessSwitchItem rule in config.Processes)
+        {
+            if (rule.MatchMode != ProcessMatchMode.HttpState) { order++; continue; }
+            IEnumerable<HttpStateMessage> states = onlyState == null
+                ? latestHttpStates.Values
+                : new[] { onlyState };
+            foreach (HttpStateMessage state in states)
+            {
+                if (HttpStateMatches(rule, state)) matches.Add(new HttpStateMatch(rule, state, order));
+            }
+            order++;
+        }
+
+        return matches
+            .OrderByDescending(match => RulePriority(match.Rule))
+            .ThenBy(match => match.Order)
+            .FirstOrDefault();
+    }
+
+    private static bool HttpStateMatches(ProcessSwitchItem rule, HttpStateMessage state) =>
+        ProcessNamesEqual(rule.Name, state.ProcessName) &&
+        RemoteFieldMatches(rule.RemoteAddress, state.Address) &&
+        RemoteFieldMatches(rule.RemoteTitle, state.Title) &&
+        RemoteFieldMatches(rule.RemoteStatusText, state.StatusText) &&
+        RemoteFieldMatches(rule.RemoteState, state.State);
+
+    private static bool ProcessNamesEqual(string left, string right)
+    {
+        static string Normalize(string value)
+        {
+            string result = value.Trim();
+            return result.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? result[..^4] : result;
+        }
+
+        return string.Equals(Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool RemoteFieldMatches(string expected, string actual) =>
+        string.IsNullOrWhiteSpace(expected) ||
+        actual.Contains(expected.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static string HttpStateSignature(HttpStateMatch match)
+    {
+        string value = string.Join("\u001f", match.Rule.RuleId, match.State.ProcessName, match.State.Address, match.State.Title, match.State.StatusText, match.State.State, match.Rule.ActiveSpatialAudioModeId, match.Rule.ActiveProfile, ReadEndpointPath(match.Rule.EndpointFile) ?? string.Empty);
+        return "http|" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static string HttpStateOperationKey(HttpStateMatch match) =>
+        "http:" + match.Rule.RuleId + ":" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\u001f", match.State.ProcessName, match.State.Address, match.State.Title, match.State.StatusText, match.State.State)))).Substring(0, 16);
+
     private void MonitorTimer_Tick(DispatcherQueueTimer sender, object args)
     {
         MonitorTimer_Tick(sender, args, null);
@@ -1379,7 +2065,7 @@ public sealed partial class MainPage : Page, IDisposable
     {
         if (!audioStateInitialized) return;
 
-        if (Volatile.Read(ref audioOperationInProgress) != 0)
+        if (Volatile.Read(ref audioOperationInProgress) != 0 || audioApiQueue.IsBusy)
         {
             Interlocked.Exchange(ref audioEvaluationPending, 1);
             LogMonitorDecision(
@@ -1450,12 +2136,41 @@ public sealed partial class MainPage : Page, IDisposable
             .Select(match => match.Rule)
             .FirstOrDefault();
 
+        AddressRuleMatch? activeAddressRule = FindBestAddressRuleMatch();
+        HttpStateMatch? activeHttpState = FindBestHttpStateMatch();
+        if (activeAddressRule != null &&
+            (activeRule == null || AddressRulePriority(activeAddressRule) >= RulePriority(activeRule)) &&
+            (activeHttpState == null || AddressRulePriority(activeAddressRule) >= RulePriority(activeHttpState.Rule)))
+        {
+            string addressSignature = AddressRuleSignature(activeAddressRule);
+            if (!string.Equals(activeGlobalSettingsSignature, addressSignature, StringComparison.Ordinal))
+            {
+                if (RunAddressProfileAsync(activeAddressRule, AddressRuleOperationKey(activeAddressRule)))
+                {
+                    activeGlobalSettingsSignature = addressSignature;
+                }
+            }
+            return;
+        }
+
+        if (activeHttpState != null &&
+            (activeRule == null || RulePriority(activeHttpState.Rule) >= RulePriority(activeRule)))
+        {
+            activeRule = activeHttpState.Rule;
+        }
+
         if (activeRule != null)
         {
-            string ruleSignature = $"rule|{activeRule.RuleId}|{activeRule.ActiveSpatialAudioModeId}|{activeRule.ActiveProfile}|{ReadEndpointPath(activeRule.EndpointFile)}|{activeRule.GlobalVolumePercent?.ToString() ?? "<default>"}|{config.GlobalVolumePercent?.ToString() ?? "<none>"}";
+            bool useHttpState = activeHttpState != null && ReferenceEquals(activeHttpState.Rule, activeRule);
+            string ruleSignature = useHttpState
+                ? HttpStateSignature(activeHttpState!)
+                : $"rule|{activeRule.RuleId}|{activeRule.ActiveSpatialAudioModeId}|{activeRule.ActiveProfile}|{ReadEndpointPath(activeRule.EndpointFile)}|{activeRule.GlobalVolumePercent?.ToString() ?? "<default>"}|{config.GlobalVolumePercent?.ToString() ?? "<none>"}";
             if (!string.Equals(activeGlobalSettingsSignature, ruleSignature, StringComparison.Ordinal))
             {
-                if (RunProfileAsync(activeRule, activeRule.ActiveProfile, activeRule.ActiveSpatialAudioModeId, $"{activeRule.RuleId}:spatial"))
+                string operationKey = useHttpState
+                    ? HttpStateOperationKey(activeHttpState!)
+                    : $"{activeRule.RuleId}:spatial";
+                if (RunProfileAsync(activeRule, activeRule.ActiveProfile, activeRule.ActiveSpatialAudioModeId, operationKey))
                 {
                     activeGlobalSettingsSignature = ruleSignature;
                 }
@@ -1480,6 +2195,8 @@ public sealed partial class MainPage : Page, IDisposable
     {
         if (item.PriorityOverride.HasValue) return item.PriorityOverride.Value;
 
+        if (item.MatchMode == ProcessMatchMode.HttpState) return 200;
+
         int priority = item.ForegroundOnly ? 100 : 0;
         if (item.MatchMode == ProcessMatchMode.FullPath) priority += 10;
         return priority;
@@ -1501,6 +2218,7 @@ public sealed partial class MainPage : Page, IDisposable
     private static List<int> GetMatchingProcessIds(ProcessSwitchItem item, int? foregroundProcessId)
     {
         var result = new List<int>();
+        if (item.MatchMode == ProcessMatchMode.HttpState) return result;
         try
         {
             if (item.MatchMode == ProcessMatchMode.ProcessName)
@@ -1566,6 +2284,20 @@ public sealed partial class MainPage : Page, IDisposable
             operationKey: operationKeyOverride ?? item.RuleId);
     }
 
+    private bool RunAddressProfileAsync(AddressRuleMatch match, string operationKey)
+    {
+        ProcessSwitchItem action = match.Rule.Action;
+        float? requestedVolume = action.GlobalVolumePercent ?? match.Parent.GlobalVolumePercent ?? config.GlobalVolumePercent;
+        return RunAudioOperationAsync(
+            $"{match.Parent.Name} / {match.Rule.DisplayName}",
+            ReadEndpointPath(action.EndpointFile),
+            action.ActiveProfile,
+            action.ActiveSpatialAudioModeId,
+            apply: true,
+            endpointVolumePercent: VolumeSafety.Clamp(requestedVolume, config.VolumeProtectionEnabled),
+            operationKey: operationKey);
+    }
+
     private bool RunGlobalProfileAsync(string profile, string spatialAudioModeId, string operationKey)
     {
         return RunAudioOperationAsync(
@@ -1615,7 +2347,7 @@ public sealed partial class MainPage : Page, IDisposable
         bool shouldSetGlobalOutput = !string.IsNullOrWhiteSpace(configuredEndpointPath);
         configuredEndpointPath ??= string.Empty;
         List<AudioEndpointChoice> endpointSnapshot = endpoints.ToList();
-        _ = Task.Run(async () =>
+        _ = audioApiQueue.EnqueueAsync(async () =>
         {
             try
             {
@@ -1639,7 +2371,7 @@ public sealed partial class MainPage : Page, IDisposable
                     }
                     else
                     {
-                        string outputResult = await Task.Run(() => ProcessAudioRouter.SetSystemDefaultOutputDevice(endpointPath, apply));
+                        string outputResult = ProcessAudioRouter.SetSystemDefaultOutputDevice(endpointPath, apply);
                         Log($"[{operationName}] {outputResult}");
                         if (outputResult.StartsWith("C# default output switched", StringComparison.OrdinalIgnoreCase))
                         {
@@ -1654,16 +2386,29 @@ public sealed partial class MainPage : Page, IDisposable
                         endpointVolumePercent.Value,
                         apply)}");
                 }
+                bool refreshDolbyAudioGraph = apply && provider is DolbyCapxProfileProvider && spatialMode.Id != "keep";
+                bool profileAppliedBeforeSpatialRefresh = false;
+                if (refreshDolbyAudioGraph)
+                {
+                    Log($"[{operationName}] applying {spatialMode.Name} preset {profile} before audio graph refresh (APPLY)...");
+                    Log((await provider!.InvokeSetterAsync(endpointPath, profile, apply)).Trim());
+                    profileAppliedBeforeSpatialRefresh = true;
+                }
+
                 if (spatialMode.Id != "keep")
                 {
                     Log($"[{operationName}] requesting spatial format {spatialMode.Name} {(apply ? "(APPLY)" : "(DRY-RUN)")}...");
-                    Log((await AudioSystemState.SetDefaultSpatialAudioModeAsync(endpointPath, spatialMode.Id, apply)).Trim());
+                    Log((await AudioSystemState.SetDefaultSpatialAudioModeAsync(
+                        endpointPath,
+                        spatialMode.Id,
+                        apply,
+                        forceRefresh: refreshDolbyAudioGraph)).Trim());
                 }
 
-                if (provider != null)
+                if (provider != null && !profileAppliedBeforeSpatialRefresh)
                 {
                     Log($"[{operationName}] applying {spatialMode.Name} preset {profile} {(apply ? "(APPLY)" : "(DRY-RUN)")}...");
-                    Log(provider.InvokeSetter(endpointPath, profile, apply).Trim());
+                    Log((await provider.InvokeSetterAsync(endpointPath, profile, apply)).Trim());
                 }
             }
             catch (Exception ex)
@@ -1695,16 +2440,90 @@ public sealed partial class MainPage : Page, IDisposable
         config.StartWithWindows = StartWithWindowsCheckBox.IsChecked == true;
         config.StartSilent = StartSilentCheckBox.IsChecked == true;
         config.StartMonitor = StartMonitorCheckBox.IsChecked == true;
+        config.HttpListenerEnabled = HttpListenerEnabledCheckBox.IsChecked == true;
         if (ReferenceEquals(sender, VolumeProtectionCheckBox))
         {
             config.VolumeProtectionEnabled = VolumeProtectionCheckBox.IsChecked == true;
         }
         SaveConfig();
 
+        if (ReferenceEquals(sender, HttpListenerEnabledCheckBox))
+        {
+            StartHttpListener();
+        }
+
         if (ReferenceEquals(sender, VolumeProtectionCheckBox))
         {
             await ApplyVolumeProtectionAsync();
         }
+    }
+
+    private void HttpListenerBindComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressHttpListenerSelection || HttpListenerBindComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string bindAddress) return;
+        config.HttpListenerBindAddress = bindAddress;
+        SaveConfig();
+        StartHttpListener();
+    }
+
+    private void HttpListenerPortNumberBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (suppressHttpListenerSelection || double.IsNaN(args.NewValue)) return;
+
+        int port = Math.Clamp((int)Math.Round(args.NewValue), 1, 65535);
+        if (Math.Abs(args.NewValue - port) > double.Epsilon)
+        {
+            sender.Value = port;
+            return;
+        }
+
+        config.HttpListenerPort = port;
+        SaveConfig();
+        if (config.HttpListenerEnabled) StartHttpListener();
+    }
+
+    private void HttpListenerPasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
+    {
+        if (suppressHttpListenerSelection) return;
+        config.HttpListenerPassword = HttpListenerPasswordBox.Password;
+        SaveConfig();
+        if (config.HttpListenerEnabled) StartHttpListener();
+    }
+
+    private void StartHttpListener()
+    {
+        StopHttpListener();
+        if (!config.HttpListenerEnabled) return;
+
+        try
+        {
+            string bindAddress = string.Equals(config.HttpListenerBindAddress, "0.0.0.0", StringComparison.OrdinalIgnoreCase)
+                ? "0.0.0.0"
+                : "127.0.0.1";
+            int port = Math.Clamp(config.HttpListenerPort, 1, 65535);
+            httpStateServer = new LocalHttpStateServer(bindAddress, port, config.HttpListenerPassword, HandleHttpStateAsync);
+            httpStateServer.Start();
+            string passwordState = string.IsNullOrEmpty(config.HttpListenerPassword) ? "without password" : "with password";
+            Log($"HTTP state listener started: http://{bindAddress}:{port}/api/state ({passwordState}).");
+            if (bindAddress == "0.0.0.0" && string.IsNullOrEmpty(config.HttpListenerPassword))
+            {
+                Log("WARNING: HTTP state listener is reachable on all network interfaces without a password.");
+            }
+        }
+        catch (Exception ex)
+        {
+            httpStateServer = null;
+            Log($"HTTP state listener failed to start: {ex.Message}");
+        }
+    }
+
+    private void StopHttpListener()
+    {
+        LocalHttpStateServer? server = httpStateServer;
+        httpStateServer = null;
+        if (server == null) return;
+        server.Dispose();
+        Log("HTTP state listener stopped.");
     }
 
     private async Task ApplyVolumeProtectionAsync()
@@ -1727,7 +2546,8 @@ public sealed partial class MainPage : Page, IDisposable
         {
             config.GlobalVolumePercent = safeGlobalVolume;
             SaveConfig();
-            string result = AudioVolumeController.SetEndpointVolume(null, safeGlobalVolume, apply: true);
+            string result = await audioApiQueue.EnqueueAsync(() => Task.FromResult(
+                AudioVolumeController.SetEndpointVolume(null, safeGlobalVolume, apply: true)));
             Log($"Volume protection applied -> {safeGlobalVolume:0}%: {result}");
             OutputVolumeValueTextBlock.Text = $"{safeGlobalVolume:0}%";
         }
@@ -1837,6 +2657,14 @@ public sealed partial class MainPage : Page, IDisposable
         return Path.Combine(AppPaths.WorkDirectory, $"endpoint-{hash}.txt");
     }
 
+    private static string EndpointFileForAddressRule(string processName, string ruleId)
+    {
+        AppPaths.EnsureDataDirectories();
+        string key = processName + "\u001f" + ruleId;
+        string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).Substring(0, 16).ToLowerInvariant();
+        return Path.Combine(AppPaths.WorkDirectory, $"endpoint-address-{hash}.txt");
+    }
+
     private static string EndpointFileForGlobalDefaults() => EndpointFileForProcess("global-defaults");
 
     private void SaveConfig()
@@ -1851,10 +2679,89 @@ public sealed partial class MainPage : Page, IDisposable
         if (run == null) return;
         if (config.StartWithWindows)
         {
-            string executable = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "DolbyAccessAutoSwitch.WinUI.exe");
-            run.SetValue("DolbyAccessAutoSwitch", $"\"{executable}\" --silent");
+            string executable = Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "AudioSwitch.WinUI.exe");
+            run.SetValue("AudioSwitch", $"\"{executable}\" --silent");
         }
-        else run.DeleteValue("DolbyAccessAutoSwitch", false);
+        else
+        {
+            run.DeleteValue("AudioSwitch", false);
+        }
+    }
+
+    private void OpenLogButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            AppPaths.EnsureDataDirectories();
+            string content;
+            lock (logFileLock)
+            {
+                content = File.Exists(AppPaths.LogPath)
+                    ? File.ReadAllText(AppPaths.LogPath, Encoding.UTF8)
+                    : logEntries.Count == 0
+                        ? Localization.Text("MainPage_NoLog")
+                        : string.Join(Environment.NewLine, logEntries);
+            }
+
+            string viewDirectory = Path.Combine(Path.GetTempPath(), "AudioSwitch");
+            Directory.CreateDirectory(viewDirectory);
+            string viewPath = Path.Combine(viewDirectory, "audio-switch-current.log");
+            File.WriteAllText(viewPath, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            string notepadPath = Path.Combine(Environment.SystemDirectory, "notepad.exe");
+            if (!File.Exists(notepadPath)) throw new FileNotFoundException("Windows Notepad was not found.", notepadPath);
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = notepadPath,
+                WorkingDirectory = Environment.SystemDirectory,
+                UseShellExecute = true,
+                Arguments = $"\"{viewPath}\""
+            });
+            Log($"Opened log snapshot in Notepad: {viewPath}");
+        }
+        catch (Exception ex)
+        {
+            Log("Opening log in Notepad failed: " + ex.Message);
+        }
+    }
+
+    private void OpenChromeExtensionButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenChromeExtensionDirectory();
+    }
+
+    private bool OpenChromeExtensionDirectory()
+    {
+        try
+        {
+            string[] candidates =
+            {
+                Path.Combine(AppContext.BaseDirectory, "chrome-extension"),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "chrome-extension"))
+            };
+            string directory = candidates.FirstOrDefault(Directory.Exists) ?? candidates[0];
+            if (!Directory.Exists(directory))
+            {
+                Log($"Chrome extension directory was not found: {directory}");
+                return false;
+            }
+
+            string explorerPath = Path.Combine(Environment.SystemDirectory, "explorer.exe");
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = explorerPath,
+                WorkingDirectory = Environment.SystemDirectory,
+                UseShellExecute = false,
+                ArgumentList = { directory }
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log("Opening Chrome extension directory failed: " + ex.Message);
+            return false;
+        }
     }
 
     private async void ExportLogButton_Click(object sender, RoutedEventArgs e)
@@ -1895,6 +2802,44 @@ public sealed partial class MainPage : Page, IDisposable
         {
             Log("Log export failed: " + ex.Message);
         }
+    }
+
+    private async void ClearLogButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = Localization.Text("Dialog_ClearLog.Title"),
+            Content = new TextBlock
+            {
+                Text = Localization.Text("Dialog_ClearLog.Description"),
+                TextWrapping = TextWrapping.Wrap
+            },
+            PrimaryButtonText = Localization.Text("Dialog_ClearLog.Primary"),
+            CloseButtonText = Localization.Text("Dialog_Cancel"),
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = XamlRoot
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        bool failed = false;
+        lock (logFileLock)
+        {
+            logEntries.Clear();
+            foreach (string path in new[] { AppPaths.LogPath, AppPaths.RotatedLogPath })
+            {
+                try
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                }
+                catch
+                {
+                    failed = true;
+                }
+            }
+        }
+
+        StatusText.Text = Localization.Value(failed ? "Status_LogClearFailed" : "Status_LogCleared");
     }
 
     private static string FormatProcessIds(IReadOnlyList<int> processIds) =>
@@ -1951,27 +2896,30 @@ public sealed partial class MainPage : Page, IDisposable
 
         try
         {
-            AudioSystemStatus current = AudioSystemState.Read(Array.Empty<AudioEndpointChoice>());
-            if (!string.IsNullOrWhiteSpace(checkpoint.EndpointPath) &&
-                !string.Equals(current.DefaultEndpointPath, checkpoint.EndpointPath, StringComparison.OrdinalIgnoreCase))
+            audioApiQueue.EnqueueAsync(async () =>
             {
-                Log($"Exit restore output -> {ProcessAudioRouter.SetSystemDefaultOutputDevice(checkpoint.EndpointPath, apply: true)}");
-            }
+                AudioSystemStatus current = AudioSystemState.Read(Array.Empty<AudioEndpointChoice>());
+                if (!string.IsNullOrWhiteSpace(checkpoint.EndpointPath) &&
+                    !string.Equals(current.DefaultEndpointPath, checkpoint.EndpointPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    Log($"Exit restore output -> {ProcessAudioRouter.SetSystemDefaultOutputDevice(checkpoint.EndpointPath, apply: true)}");
+                }
 
-            if (!string.IsNullOrWhiteSpace(checkpoint.EndpointPath) && !string.IsNullOrWhiteSpace(checkpoint.SpatialAudioModeId))
-            {
-                string spatialResult = Task.Run(() => AudioSystemState.SetDefaultSpatialAudioModeAsync(
-                    checkpoint.EndpointPath,
-                    checkpoint.SpatialAudioModeId,
-                    apply: true)).GetAwaiter().GetResult();
-                Log($"Exit restore spatial audio -> {spatialResult}");
-            }
+                if (!string.IsNullOrWhiteSpace(checkpoint.EndpointPath) && !string.IsNullOrWhiteSpace(checkpoint.SpatialAudioModeId))
+                {
+                    string spatialResult = await AudioSystemState.SetDefaultSpatialAudioModeAsync(
+                        checkpoint.EndpointPath,
+                        checkpoint.SpatialAudioModeId,
+                        apply: true);
+                    Log($"Exit restore spatial audio -> {spatialResult}");
+                }
 
-            if (checkpoint.GlobalVolumePercent is float volume)
-            {
-                float safeVolume = VolumeSafety.Clamp(volume, config.VolumeProtectionEnabled);
-                Log($"Exit restore volume -> {AudioVolumeController.SetEndpointVolume(null, safeVolume, apply: true)}");
-            }
+                if (checkpoint.GlobalVolumePercent is float volume)
+                {
+                    float safeVolume = VolumeSafety.Clamp(volume, config.VolumeProtectionEnabled);
+                    Log($"Exit restore volume -> {AudioVolumeController.SetEndpointVolume(null, safeVolume, apply: true)}");
+                }
+            }).GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
@@ -1982,7 +2930,9 @@ public sealed partial class MainPage : Page, IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref exitRestoreStarted, 1) != 0) return;
+        StopAudioCurve();
         audioRefreshTimer.Stop();
+        audioCurveTimer.Stop();
         notificationHideTimer.Stop();
         monitorTimer.Stop();
         foregroundDebounceTimer.Stop();
@@ -1990,10 +2940,13 @@ public sealed partial class MainPage : Page, IDisposable
         globalVolumeApplyCts?.Cancel();
         globalVolumeApplyCts?.Dispose();
         globalVolumeApplyCts = null;
+        StopHttpListener();
         foregroundWindowMonitor?.Dispose();
         foregroundWindowMonitor = null;
         audioSystemChangeMonitor?.Dispose();
         audioSystemChangeMonitor = null;
+        audioCurveCapture.Dispose();
         RestoreExitRestoreCheckpoint();
+        audioApiQueue.Dispose();
     }
 }

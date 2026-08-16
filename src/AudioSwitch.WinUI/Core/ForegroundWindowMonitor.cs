@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI.Dispatching;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
 
 /// <summary>
 /// Receives foreground-window changes without polling. The WinEvent hook is

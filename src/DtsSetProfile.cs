@@ -1,49 +1,33 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Runtime.InteropServices;
+using System.Linq;
 using System.Text;
+using Windows.ApplicationModel;
+using Windows.Foundation.Collections;
+using Windows.Storage;
 
 internal static class DtsSetProfile
 {
-    private const int RoInitMultithreaded = 1;
-    private const int InterfaceFirstMethodSlot = 6;
-    private static readonly Guid CapxSettingsInterfaceId = new("ECACB328-8789-31DC-9B2F-149248908B52");
-    private static string lastStage = "not-started";
+    private const string RuntimeSettingsContainerName = "RuntimeSettings";
+    private const string RuntimeSettingsBlobName = "RuntimeSettingsBLOBName";
+    private const string AudioRendererIdName = "AudioRendererId";
 
-    [DllImport("combase.dll", CharSet = CharSet.Unicode)]
-    private static extern int WindowsCreateString(string value, int length, out nint hstring);
-
-    [DllImport("combase.dll")]
-    private static extern int WindowsDeleteString(nint hstring);
-
-    [DllImport("combase.dll")]
-    private static extern int RoInitialize(uint initType);
-
-    [DllImport("combase.dll")]
-    private static extern void RoUninitialize();
-
-    [DllImport("combase.dll")]
-    private static extern int RoActivateInstance(nint activatableClassId, out nint instance);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int QueryInterfaceDelegate(nint self, ref Guid iid, out nint value);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int IsCapxSupportedDelegate(nint self, nint deviceId, out byte value);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int TryIncrementTransactionCounterDelegate(nint self, nint deviceId, out byte value);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int TryWriteSadBlobDelegate(nint self, nint deviceId, uint blobSize, nint blob, out byte value);
-
-    private static nint VtableSlot(nint instance, int slot) =>
-        Marshal.ReadIntPtr(Marshal.ReadIntPtr(instance), slot * nint.Size);
-
-    private static T Delegate<T>(nint instance, int slot) where T : class =>
-        Marshal.GetDelegateForFunctionPointer<T>(VtableSlot(instance, slot));
-
-    private static string Hr(int value) => "0x" + value.ToString("X8");
+    // These names are the actual Sound Unbound resource labels. The generic
+    // Headphone:X page exposes Balanced/Spacious; the partner catalog exposes
+    // the Gaming/Movies variants below. Do not invent Game/Movie aliases here.
+    private static readonly IReadOnlyDictionary<string, string> ProfileBlobs =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Balanced"] = "02-SPAC-HqHeightAndHgNf_SD1_Hp_Normal_v4_RC2.SPAC.crypt",
+            ["Spacious"] = "04-SPAC-HqHeightAndHgNf_SD2_Hp_Normal_v4_RC2.SPAC.crypt",
+            ["Gaming: Balanced"] = "2403-GamingBalanced.SPAC.crypt",
+            ["Gaming: Neutral"] = "2403-GamingNeutral.SPAC.crypt",
+            ["Gaming: Spacious"] = "2403-GamingSpacious.SPAC.crypt",
+            ["Gaming: Spacious 2"] = "2403-GamingSpacious2.SPAC.crypt",
+            ["Movies: Balanced"] = "2403-MoviesBalanced.SPAC.crypt",
+            ["Movies: Spacious"] = "2403-MoviesSpacious.SPAC.crypt"
+        };
 
     private static string Json(string? value)
     {
@@ -51,176 +35,181 @@ internal static class DtsSetProfile
         return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n") + "\"";
     }
 
-    private static string EndpointId(string value)
+    private static string EncodeSetting(string value) =>
+        Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+
+    private static string DecodeSetting(object? value)
     {
-        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-        if (value.Contains("MMDEVAPI#", StringComparison.OrdinalIgnoreCase))
-        {
-            int marker = value.IndexOf("MMDEVAPI#", StringComparison.OrdinalIgnoreCase);
-            string coreId = value[(marker + "MMDEVAPI#".Length)..];
-            int interfaceMarker = coreId.IndexOf("#{", StringComparison.Ordinal);
-            return interfaceMarker > 0 ? coreId[..interfaceMarker] : coreId;
-        }
-
-        if (value.StartsWith("{", StringComparison.Ordinal) && value.EndsWith("}", StringComparison.Ordinal) &&
-            !value.StartsWith("{0.0.00000000}.", StringComparison.OrdinalIgnoreCase))
-        {
-            return "{0.0.00000000}." + value;
-        }
-
-        return value;
-    }
-
-    private static string[] DeviceIdCandidates(string value)
-    {
-        string normalized = EndpointId(value);
-        return new[] { normalized, value }
-            .WhereNotEmpty()
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-    }
-
-    private static string[] WhereNotEmpty(this IEnumerable<string> values) =>
-        values.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
-
-    private static string Execute(string endpoint, string? profilePath, bool apply, bool force)
-    {
-        nint className = 0;
-        nint deviceId = 0;
-        nint instance = 0;
-        nint settings = 0;
-        nint blob = 0;
-        int initHr = RoInitialize(RoInitMultithreaded);
+        if (value is not string text || string.IsNullOrWhiteSpace(text)) return string.Empty;
         try
         {
-            lastStage = "create-class-string";
-            int hr = WindowsCreateString("CapxSettingsInterface.CapxSettings", "CapxSettingsInterface.CapxSettings".Length, out className);
-            if (hr < 0) throw new COMException("WindowsCreateString(class)", hr);
-
-            lastStage = "activate-instance";
-            hr = RoActivateInstance(className, out instance);
-            if (hr < 0) throw new COMException("RoActivateInstance", hr);
-
-            lastStage = "query-interface";
-            Guid interfaceId = CapxSettingsInterfaceId;
-            hr = Delegate<QueryInterfaceDelegate>(instance, 0)(instance, ref interfaceId, out settings);
-            if (hr < 0) throw new COMException("QueryInterface(CapxSettingsInterface)", hr);
-
-            string[] candidates = DeviceIdCandidates(endpoint);
-            string? selectedDeviceId = null;
-            byte supported = 0;
-            foreach (string candidate in candidates)
-            {
-                lastStage = "create-device-string";
-                hr = WindowsCreateString(candidate, candidate.Length, out deviceId);
-                if (hr < 0) throw new COMException("WindowsCreateString(device)", hr);
-
-                lastStage = "is-capx-supported";
-                hr = Delegate<IsCapxSupportedDelegate>(settings, InterfaceFirstMethodSlot)(settings, deviceId, out supported);
-                WindowsDeleteString(deviceId);
-                deviceId = 0;
-                if (hr < 0) throw new COMException("IsCAPxSupported", hr);
-                if (supported != 0)
-                {
-                    selectedDeviceId = candidate;
-                    break;
-                }
-            }
-
-            bool forced = false;
-            if (selectedDeviceId == null || supported == 0)
-            {
-                if (!apply || !force)
-                {
-                    return "{\"supported\":false,\"forced\":false,\"deviceId\":null,\"applied\":false}";
-                }
-
-                // The caller explicitly requested a live write. Keep the
-                // first normalized endpoint candidate and let the Unbound
-                // provider accept or reject the actual transaction.
-                selectedDeviceId = candidates.FirstOrDefault();
-                if (string.IsNullOrWhiteSpace(selectedDeviceId))
-                {
-                    return "{\"supported\":false,\"forced\":true,\"deviceId\":null,\"applied\":false}";
-                }
-
-                forced = true;
-            }
-
-            if (!apply)
-            {
-                return "{\"supported\":true,\"forced\":false,\"deviceId\":" + Json(selectedDeviceId) + ",\"applied\":false}";
-            }
-
-            if (string.IsNullOrWhiteSpace(profilePath) || !File.Exists(profilePath))
-            {
-                throw new FileNotFoundException("The DTS SAD profile blob is missing.", profilePath);
-            }
-
-            byte[] sadBlob = File.ReadAllBytes(profilePath);
-            if (sadBlob.Length == 0) throw new InvalidDataException("The DTS SAD profile blob is empty.");
-
-            lastStage = "create-device-string-for-write";
-            hr = WindowsCreateString(selectedDeviceId, selectedDeviceId.Length, out deviceId);
-            if (hr < 0) throw new COMException("WindowsCreateString(device)", hr);
-
-            lastStage = "increment-transaction-counter";
-            byte transactionResult;
-            hr = Delegate<TryIncrementTransactionCounterDelegate>(settings, InterfaceFirstMethodSlot + 1)(settings, deviceId, out transactionResult);
-            if (hr < 0 && !force) throw new COMException("TryIncrementTransationCounter", hr);
-            if (hr < 0) transactionResult = 0;
-
-            lastStage = "write-sad-blob";
-            blob = Marshal.AllocCoTaskMem(sadBlob.Length);
-            Marshal.Copy(sadBlob, 0, blob, sadBlob.Length);
-            byte writeResult;
-            hr = Delegate<TryWriteSadBlobDelegate>(settings, InterfaceFirstMethodSlot + 3)(settings, deviceId, (uint)sadBlob.Length, blob, out writeResult);
-            if (hr < 0) throw new COMException("TryWriteSadBlobToCapxPropertyStore", hr);
-
-            return "{\"supported\":" + (supported != 0 ? "true" : "false") +
-                   ",\"forced\":" + (forced ? "true" : "false") +
-                   ",\"deviceId\":" + Json(selectedDeviceId) +
-                   ",\"blobBytes\":" + sadBlob.Length +
-                   ",\"transaction\":" + (transactionResult != 0 ? "true" : "false") +
-                   ",\"sadWrite\":" + (writeResult != 0 ? "true" : "false") +
-                   ",\"applied\":" + (writeResult != 0 ? "true" : "false") + "}";
+            return Encoding.UTF8.GetString(Convert.FromBase64String(text));
         }
-        finally
+        catch (FormatException)
         {
-            if (blob != 0) Marshal.FreeCoTaskMem(blob);
-            if (deviceId != 0) WindowsDeleteString(deviceId);
-            if (settings != 0) Marshal.Release(settings);
-            if (instance != 0) Marshal.Release(instance);
-            if (className != 0) WindowsDeleteString(className);
-            if (initHr == 0) RoUninitialize();
+            return text;
         }
+    }
+
+    private static bool EndpointMatches(string requested, string stored)
+    {
+        string left = requested.Trim();
+        string right = stored.Trim();
+        return string.Equals(left, right, StringComparison.OrdinalIgnoreCase) ||
+               left.Contains(right, StringComparison.OrdinalIgnoreCase) ||
+               right.Contains(left, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ApplicationDataCompositeValue? FindRuntimeSettings(
+        string endpointPath,
+        out string? entryKey,
+        out string? currentBlob,
+        out string? currentDeviceProfileBlob)
+    {
+        entryKey = null;
+        currentBlob = null;
+        currentDeviceProfileBlob = null;
+
+        ApplicationDataContainer root = ApplicationData.Current.LocalSettings;
+        if (!root.Containers.TryGetValue(RuntimeSettingsContainerName, out ApplicationDataContainer? runtime))
+        {
+            return null;
+        }
+
+        foreach (KeyValuePair<string, object> pair in runtime.Values)
+        {
+            if (pair.Value is not IPropertySet values) continue;
+            string storedEndpoint = DecodeSetting(values.TryGetValue(AudioRendererIdName, out object? renderer) ? renderer : null);
+            if (!EndpointMatches(endpointPath, storedEndpoint)) continue;
+
+            var copy = new ApplicationDataCompositeValue();
+            foreach (KeyValuePair<string, object> value in values)
+            {
+                copy[value.Key] = value.Value;
+            }
+
+            entryKey = pair.Key;
+            currentBlob = DecodeSetting(values.TryGetValue(RuntimeSettingsBlobName, out object? blob) ? blob : null);
+            currentDeviceProfileBlob = DecodeSetting(values.TryGetValue("DeviceProfileSettingsBLOBName", out object? deviceBlob) ? deviceBlob : null);
+            return copy;
+        }
+
+        return null;
+    }
+
+    private static string? FindProfileForBlob(string? blobName)
+    {
+        if (string.IsNullOrWhiteSpace(blobName)) return null;
+        foreach (KeyValuePair<string, string> pair in ProfileBlobs)
+        {
+            if (string.Equals(pair.Value, blobName, StringComparison.OrdinalIgnoreCase)) return pair.Key;
+        }
+
+        return null;
+    }
+
+    private static string FindPackageBlob(string blobName)
+    {
+        string path = Path.Combine(
+            Package.Current.InstalledLocation.Path,
+            "Data",
+            "SAD",
+            blobName);
+        if (!File.Exists(path)) throw new FileNotFoundException("The DTS Sound Unbound SAD blob is missing.", path);
+        return path;
+    }
+
+    private static void EnsureLocalBlob(string packageBlobPath)
+    {
+        string localPath = Path.Combine(ApplicationData.Current.LocalFolder.Path, Path.GetFileName(packageBlobPath));
+        if (!File.Exists(localPath)) File.Copy(packageBlobPath, localPath);
+    }
+
+    private static string ReadOnly(string endpointPath)
+    {
+        ApplicationDataCompositeValue? settings = FindRuntimeSettings(
+            endpointPath,
+            out string? entryKey,
+            out string? currentBlob,
+            out string? currentDeviceProfileBlob);
+        if (settings == null || string.IsNullOrWhiteSpace(entryKey))
+        {
+            return "{\"supported\":false,\"applied\":false,\"currentProfile\":null,\"currentBlob\":null}";
+        }
+
+        string? profile = FindProfileForBlob(currentBlob);
+        return "{\"supported\":true,\"applied\":false,\"entryKey\":" + Json(entryKey) +
+               ",\"currentProfile\":" + Json(profile) +
+               ",\"currentBlob\":" + Json(currentBlob) +
+               ",\"deviceProfileBlob\":" + Json(currentDeviceProfileBlob) + "}";
+    }
+
+    private static string Apply(string endpointPath, string profile)
+    {
+        if (!ProfileBlobs.TryGetValue(profile, out string? targetBlob))
+        {
+            throw new ArgumentException("The requested DTS Sound Unbound profile is not in the installed SAD catalog.", nameof(profile));
+        }
+
+        string packageBlobPath = FindPackageBlob(targetBlob);
+        EnsureLocalBlob(packageBlobPath);
+
+        ApplicationDataCompositeValue? settings = FindRuntimeSettings(
+            endpointPath,
+            out string? entryKey,
+            out string? currentBlob,
+            out string? currentDeviceProfileBlob);
+        if (settings == null || string.IsNullOrWhiteSpace(entryKey))
+        {
+            return "{\"supported\":false,\"applied\":false,\"reason\":\"runtime settings entry for endpoint was not found\"}";
+        }
+
+        if (!string.Equals(currentBlob, targetBlob, StringComparison.OrdinalIgnoreCase))
+        {
+            settings[RuntimeSettingsBlobName] = EncodeSetting(targetBlob);
+            ApplicationData.Current.LocalSettings.Containers[RuntimeSettingsContainerName].Values[entryKey] = settings;
+        }
+
+        // Read the same composite back from the package settings store. This
+        // is the authoritative state that Sound Unbound uses for generic HPX;
+        // CAPX/DSEC status is deliberately not consulted here.
+        _ = currentDeviceProfileBlob;
+        _ = FindRuntimeSettings(
+            endpointPath,
+            out string? readbackKey,
+            out string? readbackBlob,
+            out _);
+        bool applied = string.Equals(readbackKey, entryKey, StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(readbackBlob, targetBlob, StringComparison.OrdinalIgnoreCase);
+        return "{\"supported\":true,\"applied\":" + (applied ? "true" : "false") +
+               ",\"profile\":" + Json(profile) +
+               ",\"blob\":" + Json(targetBlob) +
+               ",\"previousBlob\":" + Json(currentBlob) + "}";
     }
 
     public static int Main(string[] args)
     {
-        if (args.Length < 3 || args.Length > 5)
+        if (args.Length < 3)
         {
-            Console.Error.WriteLine("Usage: DtsSetProfile.exe <endpoint-id-or-@file> <sad-profile-file-or-> <output-json> [--apply] [--force]");
+            Console.Error.WriteLine("Usage: DtsSetProfile.exe <endpoint-path> <profile-or-> <output-json> [--apply]");
             return 2;
         }
 
+        string outputPath = args[2];
         try
         {
-            string endpoint = args[0];
-            if (endpoint.StartsWith("@", StringComparison.Ordinal)) endpoint = File.ReadAllText(endpoint[1..]).Trim();
-            string? profilePath = args[1] == "-" ? null : args[1];
-            bool apply = args.Any(arg => string.Equals(arg, "--apply", StringComparison.OrdinalIgnoreCase));
-            bool force = args.Any(arg => string.Equals(arg, "--force", StringComparison.OrdinalIgnoreCase));
-            string output = Execute(endpoint, profilePath, apply, force);
-            File.WriteAllText(args[2], output, Encoding.UTF8);
+            string result = args[1] == "-" || !args.Any(arg => string.Equals(arg, "--apply", StringComparison.OrdinalIgnoreCase))
+                ? ReadOnly(args[0])
+                : Apply(args[0], args[1]);
+            File.WriteAllText(outputPath, result, Encoding.UTF8);
             return 0;
         }
         catch (Exception ex)
         {
-            string error = "{\"errorType\":" + Json(ex.GetType().FullName) + ",\"message\":" + Json(ex.Message) +
-                           ",\"hresult\":" + Json(Hr(ex.HResult)) + ",\"stage\":" + Json(lastStage) +
-                           ",\"details\":" + Json(ex.ToString()) + "}";
-            try { File.WriteAllText(args[2], error, Encoding.UTF8); } catch { }
+            string result = "{\"errorType\":" + Json(ex.GetType().FullName) +
+                            ",\"message\":" + Json(ex.Message) +
+                            ",\"hresult\":\"0x" + ex.HResult.ToString("X8") + "\"}";
+            try { File.WriteAllText(outputPath, result, Encoding.UTF8); } catch { }
             return 1;
         }
     }

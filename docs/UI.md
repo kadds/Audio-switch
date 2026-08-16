@@ -4,14 +4,14 @@
 
 WinUI 3 项目：
 
-- `src/DolbyAccessAutoSwitch.WinUI/DolbyAccessAutoSwitch.WinUI.csproj`
-- 编译输出：`src/DolbyAccessAutoSwitch.WinUI/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/`
+- `src/AudioSwitch.WinUI/AudioSwitch.WinUI.csproj`
+- 编译输出：`src/AudioSwitch.WinUI/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/`
 
 ## 启动
 
 ```text
 Set-Location G:\code\dolby-access-auto-switch
-dotnet run --project .\src\DolbyAccessAutoSwitch.WinUI\DolbyAccessAutoSwitch.WinUI.csproj -c Debug -p:Platform=x64
+dotnet run --project .\src\AudioSwitch.WinUI\AudioSwitch.WinUI.csproj -c Debug -p:Platform=x64
 ```
 
 第一次调试启动需要开启 Windows Developer Mode，以便 WinApp CLI 注册调试包身份；正常使用时关闭主窗口只会隐藏到托盘。静默启动通过 UI 中的 `Start hidden in tray` 配置控制。
@@ -20,10 +20,10 @@ dotnet run --project .\src\DolbyAccessAutoSwitch.WinUI\DolbyAccessAutoSwitch.Win
 
 监控启动后：
 
-- 任意名单进程出现：切换到 Game。
-- 所有名单进程退出：恢复 Restore profile，默认是 Movie。
-- 未勾选 Apply：只执行 dry-run，不改变 Dolby profile。
-- 勾选 Apply：通过 WinUI 内置的 C# CAPX helper 调用 `SetAtmosProfile`。
+- 只有进程规则真正匹配并成为当前生效规则时，才切换该规则保存的空间音频格式和 `Game/Movie` 预设。
+- 所有名单进程退出后，才回到全局默认配置；全局默认配置也只在监控评估时应用。
+- 修改下拉框只保存配置，不会立即覆盖当前正在生效的进程规则。
+- `Test active preset` 是显式立即测试入口，会通过 WinUI 内置的 C# CAPX helper 调用 `SetAtmosProfile`。
 
 UI 通过新的 XML 结构保存配置，不迁移旧配置，不需要 AHK，也不需要修改 Dolby Access 安装目录。
 

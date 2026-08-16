@@ -2,28 +2,56 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 
-namespace DolbyAccessAutoSwitch_WinUI;
+namespace AudioSwitch_WinUI;
 
 public sealed partial class ProcessProfileView : UserControl
 {
     private bool suppressChanges = true;
     private bool volumeProtectionEnabled = true;
+    private readonly ProcessAddressRule? addressRule;
+    private readonly ProcessSwitchItem? parentModel;
 
     public ProcessSwitchItem Model { get; }
+    public ProcessAddressRule? AddressRule => addressRule;
+    public ProcessSwitchItem? ParentModel => parentModel;
     public AudioEndpointChoice? SelectedEndpoint => EndpointComboBox.SelectedItem as AudioEndpointChoice;
 
     public event EventHandler? SettingsChanged;
     public event EventHandler? TestActiveRequested;
 
     public ProcessProfileView(ProcessSwitchItem model, string? endpointPath)
+        : this(model, endpointPath, null, null)
+    {
+    }
+
+    public ProcessProfileView(
+        ProcessSwitchItem model,
+        string? endpointPath,
+        ProcessAddressRule? addressRule,
+        ProcessSwitchItem? parentModel)
     {
         Model = model;
+        this.addressRule = addressRule;
+        this.parentModel = parentModel;
         InitializeComponent();
         RefreshLocalization();
 
-        ProcessTitleTextBlock.Text = model.DisplayName;
+        ProcessTitleTextBlock.Text = addressRule == null
+            ? model.DisplayName
+            : $"{parentModel?.Name ?? model.Name} · {addressRule.DisplayName}";
         ((ComboBoxItem)MatchModeComboBox.Items[1]).IsEnabled = !string.IsNullOrWhiteSpace(model.ExecutablePath);
-        MatchModeComboBox.SelectedIndex = model.MatchMode == ProcessMatchMode.FullPath ? 1 : 0;
+        ((ComboBoxItem)MatchModeComboBox.Items[2]).IsEnabled = true;
+        MatchModeComboBox.SelectedIndex = model.MatchMode switch
+        {
+            ProcessMatchMode.FullPath => 1,
+            ProcessMatchMode.HttpState => 2,
+            _ => 0
+        };
+        RemoteAddressTextBox.Text = model.RemoteAddress;
+        RemoteTitleTextBox.Text = model.RemoteTitle;
+        RemoteStatusTextBox.Text = model.RemoteStatusText;
+        RemoteStateTextBox.Text = model.RemoteState;
+        RefreshHttpStateMatchPanel();
         ForegroundOnlyCheckBox.IsChecked = model.ForegroundOnly;
         PriorityOverrideNumberBox.Value = model.PriorityOverride ?? double.NaN;
         GlobalVolumeEnabledCheckBox.IsChecked = model.GlobalVolumePercent.HasValue;
@@ -37,7 +65,20 @@ public sealed partial class ProcessProfileView : UserControl
         suppressChanges = false;
 
         EndpointPath = endpointPath;
+        if (addressRule != null) ConfigureAddressRuleEditor();
         RefreshCurrentMatch();
+    }
+
+    private void ConfigureAddressRuleEditor()
+    {
+        RuleMatchingTextBlock.Visibility = Visibility.Collapsed;
+        RuleHintTextBlock.Visibility = Visibility.Collapsed;
+        MatchModeComboBox.Visibility = Visibility.Collapsed;
+        HttpStateMatchPanel.Visibility = Visibility.Collapsed;
+        AddressRuleMatchPanel.Visibility = Visibility.Visible;
+        ProcessPathTextBlock.Visibility = Visibility.Collapsed;
+        AddressRuleNameTextBox.Text = addressRule?.Name ?? string.Empty;
+        AddressRuleAddressTextBox.Text = addressRule?.Address ?? string.Empty;
     }
 
     public bool SetVolumeProtection(bool enabled)
@@ -73,6 +114,15 @@ public sealed partial class ProcessProfileView : UserControl
         RuleHintTextBlock.Text = Localization.Text("ProcessProfile_RuleHint");
         ((ComboBoxItem)MatchModeComboBox.Items[0]).Content = Localization.Content("ProcessProfile_ProcessName");
         ((ComboBoxItem)MatchModeComboBox.Items[1]).Content = Localization.Content("ProcessProfile_FullPath");
+        ((ComboBoxItem)MatchModeComboBox.Items[2]).Content = Localization.Content("ProcessProfile_HttpState");
+        HttpStateMatchHintTextBlock.Text = Localization.Text("ProcessProfile_HttpStateHint");
+        AddressRuleMatchHintTextBlock.Text = Localization.Text("ProcessProfile_AddressRuleHint");
+        AddressRuleNameTextBox.Header = Localization.Text("ProcessProfile_AddressRuleName");
+        AddressRuleAddressTextBox.Header = Localization.Text("ProcessProfile_AddressRuleAddress");
+        RemoteAddressTextBox.Header = Localization.Text("ProcessProfile_RemoteAddress");
+        RemoteTitleTextBox.Header = Localization.Text("ProcessProfile_RemoteTitle");
+        RemoteStatusTextBox.Header = Localization.Text("ProcessProfile_RemoteStatusText");
+        RemoteStateTextBox.Header = Localization.Text("ProcessProfile_RemoteState");
         ForegroundOnlyCheckBox.Content = Localization.Content("ProcessProfile_ForegroundOnly");
         ForegroundHintTextBlock.Text = Localization.Text("ProcessProfile_ForegroundHint");
         PriorityOverrideLabelTextBlock.Text = Localization.Text("ProcessProfile_PriorityOverride");
@@ -95,6 +145,7 @@ public sealed partial class ProcessProfileView : UserControl
         ProcessPathTextBlock.Text = string.IsNullOrWhiteSpace(Model.ExecutablePath)
             ? Localization.Text("ProcessProfile_PathUnavailable")
             : Localization.FormatValue("ProcessProfile_Path", Model.ExecutablePath);
+        RefreshAddressRuleEditorTitle();
         RefreshCurrentMatch();
     }
 
@@ -183,7 +234,40 @@ public sealed partial class ProcessProfileView : UserControl
         {
             Model.MatchMode = mode;
         }
+        RefreshHttpStateMatchPanel();
         RefreshCurrentMatch();
+        if (!suppressChanges) SettingsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void RefreshHttpStateMatchPanel()
+    {
+        bool enabled = addressRule == null && Model.MatchMode == ProcessMatchMode.HttpState;
+        HttpStateMatchPanel.Visibility = enabled ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+        ForegroundOnlyCheckBox.IsEnabled = !enabled;
+    }
+
+    private void RefreshAddressRuleEditorTitle()
+    {
+        ProcessTitleTextBlock.Text = addressRule == null
+            ? Model.DisplayName
+            : $"{parentModel?.Name ?? Model.Name} · {addressRule.DisplayName}";
+    }
+
+    private void AddressRuleField_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (addressRule == null) return;
+        addressRule.Name = AddressRuleNameTextBox.Text.Trim();
+        addressRule.Address = AddressRuleAddressTextBox.Text.Trim();
+        RefreshAddressRuleEditorTitle();
+        if (!suppressChanges) SettingsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void RemoteStateField_TextChanged(object sender, Microsoft.UI.Xaml.Controls.TextChangedEventArgs e)
+    {
+        Model.RemoteAddress = RemoteAddressTextBox.Text.Trim();
+        Model.RemoteTitle = RemoteTitleTextBox.Text.Trim();
+        Model.RemoteStatusText = RemoteStatusTextBox.Text.Trim();
+        Model.RemoteState = RemoteStateTextBox.Text.Trim();
         if (!suppressChanges) SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -286,6 +370,29 @@ public sealed partial class ProcessProfileView : UserControl
         Model.ActiveProfile = ActiveProfileComboBox.SelectedItem?.ToString() ?? provider?.DefaultActiveProfile ?? string.Empty;
         RefreshCurrentMatch();
         if (!suppressChanges) SettingsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static string? ReadEndpointPath(string? endpointFile)
+    {
+        if (string.IsNullOrWhiteSpace(endpointFile)) return null;
+        string path = endpointFile;
+        if (!Path.IsPathRooted(path)) path = Path.Combine(AppPaths.RepositoryRoot, path);
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return endpointFile.Contains("MMDEVAPI#", StringComparison.OrdinalIgnoreCase) || endpointFile.StartsWith("{", StringComparison.Ordinal)
+                    ? AudioEndpointChoice.NormalizeDeviceInterfacePath(endpointFile)
+                    : null;
+            }
+
+            string value = File.ReadAllText(path).Trim();
+            return string.IsNullOrWhiteSpace(value) ? null : AudioEndpointChoice.NormalizeDeviceInterfacePath(value);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
 }

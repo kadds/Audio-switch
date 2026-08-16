@@ -2,7 +2,7 @@
 
 当前 UI 项目位于：
 
-`src/DolbyAccessAutoSwitch.WinUI/DolbyAccessAutoSwitch.WinUI.csproj`
+`src/AudioSwitch.WinUI/AudioSwitch.WinUI.csproj`
 
 技术栈：
 
@@ -22,20 +22,20 @@
 - 运行进程列表、带图标的进程选择器和进程名单维护。
 - Game / Restore profile、Apply dry-run、开机启动、启动后隐藏、自动监控。
 - 关闭主窗口隐藏到托盘；托盘菜单可以打开设置、启动监控或退出。
-- 新配置保存到 `%LOCALAPPDATA%\DolbySwitch\dolby-switch-config.xml`；当前版本不迁移旧配置，程序不会修改 Dolby 安装目录。
+- 配置保存到 `%LOCALAPPDATA%\AudioSwitch\audio-switch-config.xml`；程序不会修改 Dolby 安装目录。
 
 ## 编译
 
 在项目根目录执行：
 
 ```text
-dotnet restore .\src\DolbyAccessAutoSwitch.WinUI\DolbyAccessAutoSwitch.WinUI.csproj -r win-x64
-dotnet build .\src\DolbyAccessAutoSwitch.WinUI\DolbyAccessAutoSwitch.WinUI.csproj -c Debug -p:Platform=x64
+dotnet restore .\src\AudioSwitch.WinUI\AudioSwitch.WinUI.csproj -r win-x64
+dotnet build .\src\AudioSwitch.WinUI\AudioSwitch.WinUI.csproj -c Debug -p:Platform=x64
 ```
 
 编译输出位于：
 
-`src/DolbyAccessAutoSwitch.WinUI/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/`
+`src/AudioSwitch.WinUI/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/`
 
 当前版本只维护 WinUI 3；核心音频逻辑在 `Core/SwitchCore.cs`。
 

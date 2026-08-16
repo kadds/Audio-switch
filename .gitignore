@@ -10,6 +10,7 @@ TestResults/
 
 # Local research output and runtime state
 /work/
+/tmp/
 /.tmp-*/
 *.log
 *.tmp
