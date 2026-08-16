@@ -85,6 +85,11 @@
   <data name="MainPage_ExportLog.Text"><value>Export log</value></data>
   <data name="MainPage_ExportLog.ToolTip"><value>Export log to a text file</value></data>
   <data name="MainPage_ClearLog.Text"><value>Clear log</value></data>
+  <data name="MainPage_BuildInfoTitle.Text"><value>Build information</value></data>
+  <data name="MainPage_BuildVersionLabel.Text"><value>Version</value></data>
+  <data name="MainPage_BuildTimeLabel.Text"><value>Build time</value></data>
+  <data name="MainPage_BuildChannelLabel.Text"><value>Channel</value></data>
+  <data name="MainPage_BuildCommitLabel.Text"><value>Commit</value></data>
   <data name="MainPage_ClearLog.ToolTip"><value>Delete current and old logs</value></data>
   <data name="MainPage_OpenLog.Text"><value>Open log in Notepad</value></data>
   <data name="MainPage_OpenLog.ToolTip"><value>Open the current log in Notepad</value></data>

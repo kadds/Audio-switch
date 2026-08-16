@@ -85,6 +85,11 @@
   <data name="MainPage_ExportLog.Text"><value>&#x5BFC;&#x51FA;&#x65E5;&#x5FD7;</value></data>
   <data name="MainPage_ExportLog.ToolTip"><value>&#x5C06;&#x65E5;&#x5FD7;&#x5BFC;&#x51FA;&#x4E3A;&#x6587;&#x672C;&#x6587;&#x4EF6;</value></data>
   <data name="MainPage_ClearLog.Text"><value>&#x6E05;&#x7406;&#x65E5;&#x5FD7;</value></data>
+  <data name="MainPage_BuildInfoTitle.Text"><value>&#x7248;&#x672C;&#x4FE1;&#x606F;</value></data>
+  <data name="MainPage_BuildVersionLabel.Text"><value>&#x7248;&#x672C;</value></data>
+  <data name="MainPage_BuildTimeLabel.Text"><value>&#x7F16;&#x8BD1;&#x65F6;&#x95F4;</value></data>
+  <data name="MainPage_BuildChannelLabel.Text"><value>&#x6E20;&#x9053;</value></data>
+  <data name="MainPage_BuildCommitLabel.Text"><value>Commit</value></data>
   <data name="MainPage_ClearLog.ToolTip"><value>&#x5220;&#x9664;&#x5F53;&#x524D;&#x65E5;&#x5FD7;&#x548C;&#x65E7;&#x65E5;&#x5FD7;</value></data>
   <data name="MainPage_OpenLog.Text"><value>&#x7528;&#x8BB0;&#x4E8B;&#x672C;&#x6253;&#x5F00;&#x65E5;&#x5FD7;</value></data>
   <data name="MainPage_OpenLog.ToolTip"><value>&#x4F7F;&#x7528;&#x8BB0;&#x4E8B;&#x672C;&#x6253;&#x5F00;&#x5F53;&#x524D;&#x65E5;&#x5FD7;</value></data>

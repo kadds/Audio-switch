@@ -255,6 +255,15 @@ public sealed partial class MainPage : Page, IDisposable
         OpenLogTextBlock.Text = Localization.Text("MainPage_OpenLog");
         ExportLogTextBlock.Text = Localization.Text("MainPage_ExportLog");
         ClearLogTextBlock.Text = Localization.Text("MainPage_ClearLog");
+        BuildInfoTitleTextBlock.Text = Localization.Text("MainPage_BuildInfoTitle");
+        BuildVersionLabelTextBlock.Text = Localization.Text("MainPage_BuildVersionLabel");
+        BuildTimeLabelTextBlock.Text = Localization.Text("MainPage_BuildTimeLabel");
+        BuildChannelLabelTextBlock.Text = Localization.Text("MainPage_BuildChannelLabel");
+        BuildCommitLabelTextBlock.Text = Localization.Text("MainPage_BuildCommitLabel");
+        BuildVersionValueTextBlock.Text = BuildInfo.Version;
+        BuildTimeValueTextBlock.Text = BuildInfo.BuildTimeDisplay;
+        BuildChannelValueTextBlock.Text = BuildInfo.Channel;
+        BuildCommitValueTextBlock.Text = BuildInfo.CommitDisplay;
         copyProcessRuleMenuItem.Text = Localization.Text("MainPage_CopyRule");
         pasteProcessRuleMenuItem.Text = Localization.Text("MainPage_PasteRule");
         NotificationsTitleTextBlock.Text = Localization.Text("MainPage_NotificationsTitle");

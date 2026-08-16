@@ -10,14 +10,14 @@
 
   <Identity
     Name="FCAF3156-5213-41E8-9509-D6E2E207BAF7"
-    Publisher="CN=AppPublisher"
-    Version="1.0.0.0" />
+    Publisher="CN=Kadds, E=itmyxyf@gmail.com"
+    Version="1.0.2.0" />
 
   <mp:PhoneIdentity PhoneProductId="FCAF3156-5213-41E8-9509-D6E2E207BAF7" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
   <Properties>
     <DisplayName>Audio Switch</DisplayName>
-    <PublisherDisplayName>AppPublisher</PublisherDisplayName>
+    <PublisherDisplayName>Kadds</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 

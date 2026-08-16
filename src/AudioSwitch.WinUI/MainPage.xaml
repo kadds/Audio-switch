@@ -407,6 +407,31 @@
                                     <StackPanel Orientation="Horizontal" Spacing="7"><SymbolIcon Symbol="Delete" /><TextBlock x:Name="ClearLogTextBlock" Text="Clear log" /></StackPanel>
                                 </Button>
                             </StackPanel>
+                            <Border Style="{StaticResource CardBorderStyle}" Padding="14,12" Margin="0,8,0,0">
+                                <StackPanel Spacing="7">
+                                    <TextBlock x:Name="BuildInfoTitleTextBlock" Text="Build information" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                    <Grid ColumnSpacing="16" RowSpacing="5">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock x:Name="BuildVersionLabelTextBlock" Text="Version" Opacity="0.68" />
+                                        <TextBlock x:Name="BuildVersionValueTextBlock" Grid.Column="1" Text="1.0.1" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock x:Name="BuildTimeLabelTextBlock" Grid.Row="1" Text="Build time" Opacity="0.68" />
+                                        <TextBlock x:Name="BuildTimeValueTextBlock" Grid.Row="1" Grid.Column="1" Text="unknown" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock x:Name="BuildChannelLabelTextBlock" Grid.Row="2" Text="Channel" Opacity="0.68" />
+                                        <TextBlock x:Name="BuildChannelValueTextBlock" Grid.Row="2" Grid.Column="1" Text="local" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock x:Name="BuildCommitLabelTextBlock" Grid.Row="3" Text="Commit" Opacity="0.68" />
+                                        <TextBlock x:Name="BuildCommitValueTextBlock" Grid.Row="3" Grid.Column="1" Text="unknown" TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>

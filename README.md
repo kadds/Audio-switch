@@ -68,6 +68,21 @@ AudioSwitch 使用本地文件保存配置，不把应用配置写入 Windows �
 
 程序只调用系统音频接口以及本机已安装的 Dolby/DTS 组件，不修改 Dolby 或 DTS 的安装文件、许可证和账户状态。
 
+### CI 固定签名证书
+
+标签发布使用 GitHub Actions Secrets 中保存的固定 `.pfx` 证书签名，不把证书文件提交到仓库。配置以下两个 Secrets：
+
+- `AUDIO_SWITCH_SIGNING_CERTIFICATE_BASE64`：`.pfx` 文件的 Base64 内容
+- `AUDIO_SWITCH_SIGNING_CERTIFICATE_PASSWORD`：`.pfx` 密码
+
+可以用 PowerShell 获取 Base64 内容：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('.\AudioSwitch.pfx'))
+```
+
+证书的 Subject 会自动写入 MSIX 清单的 Publisher。发布后用户仍需安装 Release 中对应的 `.cer` 并信任它；更换证书会改变发布者身份，可能无法覆盖安装旧版本。
+
 ## 项目文档
 
 - [`docs/WINUI3.md`](docs/WINUI3.md)：界面、托盘和构建说明

@@ -25,6 +25,8 @@ TestResults/
 *.msix
 *.msixbundle
 *.nupkg
+*.pfx
+*.cer
 
 # Local IDE / OS files
 .idea/

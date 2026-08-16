@@ -14,7 +14,22 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <VersionPrefix>1.0.2</VersionPrefix>
+    <Version Condition="'$(Version)' == ''">$(VersionPrefix)</Version>
+    <AudioSwitchBuildVersion Condition="'$(AudioSwitchBuildVersion)' == ''">$(Version)</AudioSwitchBuildVersion>
+    <AudioSwitchBuildTime Condition="'$(AudioSwitchBuildTime)' == ''">$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))</AudioSwitchBuildTime>
+    <AudioSwitchBuildChannel Condition="'$(AudioSwitchBuildChannel)' == ''">local</AudioSwitchBuildChannel>
+    <AudioSwitchBuildCommit Condition="'$(AudioSwitchBuildCommit)' == '' and '$(SourceRevisionId)' != ''">$(SourceRevisionId)</AudioSwitchBuildCommit>
+    <AudioSwitchBuildCommit Condition="'$(AudioSwitchBuildCommit)' == ''">unknown</AudioSwitchBuildCommit>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(AudioSwitchBuildVersion)</InformationalVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="AudioSwitchBuildTime" Value="$(AudioSwitchBuildTime)" />
+    <AssemblyMetadata Include="AudioSwitchBuildChannel" Value="$(AudioSwitchBuildChannel)" />
+    <AssemblyMetadata Include="AudioSwitchBuildCommit" Value="$(AudioSwitchBuildCommit)" />
+  </ItemGroup>
 
   <ItemGroup>
     <Content Include="Assets\SplashScreen.scale-200.png" />
