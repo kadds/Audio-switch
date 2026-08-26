@@ -20,10 +20,8 @@
             <TextBlock x:Name="ProcessPathTextBlock" Text="Executable path: unavailable" Opacity="0.58" FontSize="12" TextWrapping="Wrap" />
         </StackPanel>
 
-        <TabView x:Name="ProfileTabView" Grid.Row="1" IsAddTabButtonVisible="False" TabWidthMode="Equal" VerticalAlignment="Stretch">
-            <TabViewItem x:Name="ProfileSettingsTabItem">
-                <TabViewItem.Content>
-        <Grid RowSpacing="10" VerticalAlignment="Top">
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <Grid RowSpacing="10" VerticalAlignment="Top">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -106,11 +104,8 @@
                 </StackPanel>
             </Border>
 
-        </Grid>
-                </TabViewItem.Content>
-            </TabViewItem>
-
-        </TabView>
+            </Grid>
+        </ScrollViewer>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="10">
             <Button Style="{StaticResource IconTextButtonStyle}" Click="TestActiveButton_Click">

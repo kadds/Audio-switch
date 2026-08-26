@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace AudioSwitch_WinUI;
 
 /// <summary>
-/// Changes the Windows system default render endpoint.
+/// Changes the Windows system default console and multimedia render endpoint.
 ///
 /// The public Core Audio interfaces expose reading the default endpoint and
 /// controlling endpoint volume, but not setting the system default endpoint.
@@ -27,7 +27,14 @@ public static class ProcessAudioRouter
             string coreAudioEndpointId = ResolveCoreAudioEndpointId(endpointPath);
             string policyEndpointId = ExtractPolicyEndpointId(endpointPath);
             bool usedPolicyEndpointId = false;
-            foreach (PolicyConfigRole role in Enum.GetValues<PolicyConfigRole>())
+            // Communication apps such as WeChat commonly use the Communications
+            // role. Keep that role untouched so applying a game/media scene
+            // cannot move or silence an ongoing call.
+            foreach (PolicyConfigRole role in new[]
+            {
+                PolicyConfigRole.Console,
+                PolicyConfigRole.Multimedia
+            })
             {
                 int hr = policy.SetDefaultEndpoint(coreAudioEndpointId, role);
                 if (hr < 0 && !string.Equals(endpointPath, coreAudioEndpointId, StringComparison.OrdinalIgnoreCase))
@@ -81,8 +88,7 @@ public static class ProcessAudioRouter
     private enum PolicyConfigRole
     {
         Console = 0,
-        Multimedia = 1,
-        Communications = 2
+        Multimedia = 1
     }
 
     [ComImport]

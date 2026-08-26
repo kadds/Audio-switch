@@ -230,7 +230,6 @@
   <data name="Profile_Probe.Value"><value>Probe: {0}</value></data>
   <data name="Profile_ProbeStatus.Value"><value>{0} / {1}</value></data>
   <data name="Log_NoDefaultOutputDevice.Value"><value>Spatial audio switch skipped: no default output device.</value></data>
-  <data name="ProcessProfile_SettingsTab.Text"><value>Basic settings</value></data>
   <data name="ProcessProfile_DolbyEqTab.Text"><value>Custom EQ</value></data>
   <data name="ProcessProfile_DolbyEqTitle.Text"><value>AudioSwitch EQ configuration</value></data>
   <data name="ProcessProfile_DolbyEqHint.Text"><value>Create an AudioSwitch EQ profile. When this rule selects it, AudioSwitch sends the curve to Dolby Access.</value></data>

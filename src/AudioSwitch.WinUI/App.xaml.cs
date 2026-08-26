@@ -3,6 +3,7 @@ using H.NotifyIcon.Core;
 using Microsoft.Windows.AppLifecycle;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using System.Windows.Input;
 using Windows.Graphics;
 using WinRT.Interop;
@@ -14,10 +15,10 @@ public partial class App : Application
     private MainWindow? window;
     private MainPage? page;
     private TaskbarIcon? trayIcon;
-    private PopupMenuItem? trayOpenItem;
-    private PopupMenuItem? trayMonitorItem;
-    private PopupMenuItem? trayExitItem;
-    private PopupMenu? trayMenu;
+    private MenuFlyoutItem? trayOpenItem;
+    private MenuFlyoutItem? trayMonitorItem;
+    private MenuFlyoutItem? trayExitItem;
+    private MenuFlyout? trayMenu;
     private AppInstance? appInstance;
     private bool allowClose;
 
@@ -108,18 +109,18 @@ public partial class App : Application
         sender.Hide();
     }
 
-    private void TrayOpen_Click(object? sender, EventArgs e)
+    private void OpenFromTray()
     {
         ShowWindow();
     }
 
-    private void TrayMonitor_Click(object? sender, EventArgs e)
+    private void StartMonitoringFromTray()
     {
         ShowWindow();
         page?.StartMonitoring();
     }
 
-    private void TrayExit_Click(object? sender, EventArgs e)
+    private void ExitFromTray()
     {
         allowClose = true;
         page?.Dispose();
@@ -160,25 +161,37 @@ public partial class App : Application
         icon.ToolTipText = "Audio Switch";
         icon.Id = Guid.Parse("a2bb0e31-59b1-4f5c-8d32-7e7b7e4d4e21");
         icon.MenuActivation = PopupActivationMode.RightClick;
+        icon.NoLeftClickDelay = true;
         icon.LeftClickCommand = new ActionCommand(ShowWindow);
         string? iconPath = FindAppIconPath();
         if (iconPath != null)
         {
             icon.Icon = new System.Drawing.Icon(iconPath);
         }
-        trayMenu = new PopupMenu();
-        trayOpenItem = new PopupMenuItem(Localization.Text("Menu_OpenSettings"), TrayOpen_Click);
-        trayMenu.Items.Add(trayOpenItem);
-        trayMonitorItem = new PopupMenuItem(Localization.Text("MainPage_StartMonitoring"), TrayMonitor_Click);
-        trayMenu.Items.Add(trayMonitorItem);
-        trayMenu.Items.Add(new PopupMenuSeparator());
-        trayExitItem = new PopupMenuItem(Localization.Text("Menu_Exit"), TrayExit_Click);
-        trayMenu.Items.Add(trayExitItem);
-        icon.ContextMenuMode = ContextMenuMode.PopupMenu;
-        if (icon.TrayIcon is TrayIconWithContextMenu trayIconWithMenu)
+        trayMenu = new MenuFlyout();
+        trayOpenItem = new MenuFlyoutItem
         {
-            trayIconWithMenu.ContextMenu = trayMenu;
-        }
+            Text = Localization.Text("Menu_OpenSettings"),
+            Command = new ActionCommand(OpenFromTray)
+        };
+        trayMenu.Items.Add(trayOpenItem);
+        trayMonitorItem = new MenuFlyoutItem
+        {
+            Text = Localization.Text("MainPage_StartMonitoring"),
+            Command = new ActionCommand(StartMonitoringFromTray)
+        };
+        trayMenu.Items.Add(trayMonitorItem);
+        trayMenu.Items.Add(new MenuFlyoutSeparator());
+        trayExitItem = new MenuFlyoutItem
+        {
+            Text = Localization.Text("Menu_Exit"),
+            Command = new ActionCommand(ExitFromTray)
+        };
+        trayMenu.Items.Add(trayExitItem);
+        // In WinUI, TaskbarIcon displays its ContextFlyout. Its underlying
+        // TrayIcon is not a TrayIconWithContextMenu, so assigning a core
+        // PopupMenu there leaves right-click with no menu to show.
+        icon.ContextFlyout = trayMenu;
         return icon;
     }
 

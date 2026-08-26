@@ -230,7 +230,6 @@
   <data name="Profile_Probe.Value"><value>&#x63A2;&#x6D4B;&#xFF1A;{0}</value></data>
   <data name="Profile_ProbeStatus.Value"><value>{0} / {1}</value></data>
   <data name="Log_NoDefaultOutputDevice.Value"><value>&#x8DF3;&#x8FC7;&#x7A7A;&#x95F4;&#x97F3;&#x9891;&#x5207;&#x6362;&#xFF1A;&#x6CA1;&#x6709;&#x9ED8;&#x8BA4;&#x8F93;&#x51FA;&#x8BBE;&#x5907;&#x3002;</value></data>
-  <data name="ProcessProfile_SettingsTab.Text"><value>基本设置</value></data>
   <data name="ProcessProfile_DolbyEqTab.Text"><value>自定义 EQ</value></data>
   <data name="ProcessProfile_DolbyEqTitle.Text"><value>AudioSwitch EQ 配置</value></data>
   <data name="ProcessProfile_DolbyEqHint.Text"><value>创建 AudioSwitch 自定义 EQ。规则选择对应的 EQ Profile 后，切换时会把曲线发送给 Dolby Access。</value></data>

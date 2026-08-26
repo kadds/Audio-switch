@@ -11,7 +11,7 @@
   <Identity
     Name="FCAF3156-5213-41E8-9509-D6E2E207BAF7"
     Publisher="CN=Kadds, E=itmyxyf@gmail.com"
-    Version="1.0.2.0" />
+    Version="1.0.3.0" />
 
   <mp:PhoneIdentity PhoneProductId="FCAF3156-5213-41E8-9509-D6E2E207BAF7" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 

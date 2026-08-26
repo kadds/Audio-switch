@@ -143,7 +143,6 @@ public sealed partial class ProcessProfileView : UserControl
         PresetHintTextBlock.Text = Localization.Text("ProcessProfile_PresetHint");
         ActivePresetTextBlock.Text = Localization.Text("ProcessProfile_ActivePreset");
         TestActiveTextBlock.Text = Localization.Text("ProcessProfile_Test");
-        ProfileSettingsTabItem.Header = Localization.Text("ProcessProfile_SettingsTab");
         ProcessPathTextBlock.Text = string.IsNullOrWhiteSpace(Model.ExecutablePath)
             ? Localization.Text("ProcessProfile_PathUnavailable")
             : Localization.FormatValue("ProcessProfile_Path", Model.ExecutablePath);

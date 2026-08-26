@@ -14,7 +14,7 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <VersionPrefix>1.0.2</VersionPrefix>
+    <VersionPrefix>1.0.3</VersionPrefix>
     <Version Condition="'$(Version)' == ''">$(VersionPrefix)</Version>
     <AudioSwitchBuildVersion Condition="'$(AudioSwitchBuildVersion)' == ''">$(Version)</AudioSwitchBuildVersion>
     <AudioSwitchBuildTime Condition="'$(AudioSwitchBuildTime)' == ''">$([System.DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))</AudioSwitchBuildTime>

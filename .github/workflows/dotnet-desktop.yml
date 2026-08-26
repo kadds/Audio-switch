@@ -50,11 +50,11 @@ jobs:
             $channel = 'stable'
           }
           elseif ($ref -eq 'refs/heads/main') {
-            $version = '1.0.2'
+            $version = '1.0.3'
             $channel = 'main'
           }
           else {
-            $version = '1.0.2'
+            $version = '1.0.3'
             $channel = 'ci'
           }
 
